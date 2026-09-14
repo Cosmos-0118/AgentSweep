@@ -20,11 +20,11 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
       - name: build
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: package
@@ -34,7 +34,7 @@ jobs:
           out="dist/agentsweep-${{ matrix.target }}"
           cp "$bin" "$out"
           shasum -a 256 "$out" > "$out.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agentsweep-${{ matrix.target }}
           path: dist/
@@ -45,10 +45,44 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
+
+  update-formula:
+    needs: [build, release]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: update homebrew formula
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          python3 scripts/update_homebrew_sha.py "$version" \
+            "aarch64-apple-darwin=$(cut -d ' ' -f1 dist/agentsweep-aarch64-apple-darwin.sha256)" \
+            "x86_64-apple-darwin=$(cut -d ' ' -f1 dist/agentsweep-x86_64-apple-darwin.sha256)" \
+            "x86_64-unknown-linux-gnu=$(cut -d ' ' -f1 dist/agentsweep-x86_64-unknown-linux-gnu.sha256)"
+      - name: commit and push
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- homebrew/agentsweep.rb; then
+            echo "homebrew formula already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add homebrew/agentsweep.rb
+          git commit -m "chore: update homebrew formula for ${GITHUB_REF_NAME}"
+          git push origin HEAD:main
