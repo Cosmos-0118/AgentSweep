@@ -12,6 +12,16 @@ pub const ORANGE: Color = Color::Rgb(251, 146, 60);
 pub const RED: Color = Color::Rgb(248, 113, 113);
 pub const GREY: Color = Color::Rgb(71, 85, 105);
 
+/// Opaque base layer for the whole TUI.
+///
+/// Many terminal emulators can be configured with a transparent window or a
+/// background image. Ratatui's default cells inherit that terminal background,
+/// so a dashboard that only paints text and borders becomes hard to read. Draw
+/// this style beneath every screen before rendering its content.
+pub fn canvas() -> Style {
+    Style::default().bg(BG)
+}
+
 pub fn risk_color(risk: crate::model::Risk) -> Color {
     match risk {
         crate::model::Risk::Safe => GREEN,

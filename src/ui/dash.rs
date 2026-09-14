@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::io::stdout;
+use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,7 +14,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Gauge, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, Borders, Clear, Gauge, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::{DefaultTerminal, Frame};
 
@@ -48,6 +49,7 @@ enum Overlay {
     None,
     Confirm,
     Refused,
+    Notice,
     Help,
     Restore,
     Optimize,
@@ -70,6 +72,7 @@ struct App {
     anim_bars: [Animated; 5],
     shake: f64,
     refused: Option<Item>,
+    notice: Option<Notice>,
     restore: Vec<Manifest>,
     restore_idx: usize,
     advice: Vec<Advice>,
@@ -80,6 +83,12 @@ struct App {
     should_quit: bool,
     clean_progress: f64,
     clean_label: String,
+}
+
+struct Notice {
+    title: String,
+    message: String,
+    color: ratatui::style::Color,
 }
 
 impl App {
@@ -101,6 +110,7 @@ impl App {
             anim_bars: std::array::from_fn(|_| Animated::new(0.0)),
             shake: 0.0,
             refused: None,
+            notice: None,
             restore: vec![],
             restore_idx: 0,
             advice: vec![],
@@ -210,6 +220,11 @@ impl App {
                 self.refused = None;
                 return;
             }
+            Overlay::Notice => {
+                self.overlay = Overlay::None;
+                self.notice = None;
+                return;
+            }
             Overlay::Help => {
                 self.overlay = Overlay::None;
                 return;
@@ -256,6 +271,7 @@ impl App {
                 self.refresh_reclaim();
             }
             KeyCode::Char(' ') => self.toggle(),
+            KeyCode::Enter => self.open_current_item(),
             KeyCode::Char('a') => self.select_allowed(),
             KeyCode::Char('n') => {
                 self.selected.clear();
@@ -411,6 +427,69 @@ impl App {
             self.selected.remove(&item.rule_id);
         }
         self.refresh_reclaim();
+    }
+
+    /// Open the primary path shown in the detail pane in the file manager. The
+    /// dashboard only ever passes a `PathBuf` as an argument, never through a
+    /// shell, so unusual filenames stay safe.
+    fn open_current_item(&mut self) {
+        let Some(item) = self.current_items().get(self.selected_item).cloned() else {
+            self.status = "Nothing to open.".into();
+            return;
+        };
+        let Some(path) = item.paths.first() else {
+            self.status = format!("No path available for {}.", item.label);
+            return;
+        };
+
+        // `output` captures launcher diagnostics. Using `status` here lets
+        // macOS write errors into the alternate screen/scrollback, corrupting
+        // the TUI when a file has no associated application.
+        let result = if cfg!(target_os = "macos") {
+            let mut command = Command::new("open");
+            // A directory opens as a Finder window; a file is revealed and
+            // selected in Finder. Neither path depends on a file association.
+            if !path.is_dir() {
+                command.arg("-R");
+            }
+            command.arg(path).output()
+        } else if cfg!(target_os = "windows") {
+            Command::new("explorer").arg(path).output()
+        } else {
+            Command::new("xdg-open").arg(path).output()
+        };
+
+        match result {
+            Ok(output) if output.status.success() => {
+                self.status = format!("Shown in Finder: {}.", path.display());
+            }
+            Err(error) => {
+                self.show_notice(
+                    " COULDN'T OPEN ",
+                    format!("AgentSweep could not open {}: {error}", path.display()),
+                    theme::RED,
+                );
+            }
+            Ok(_) => self.show_notice(
+                " COULDN'T OPEN ",
+                format!("AgentSweep could not open {}.", path.display()),
+                theme::RED,
+            ),
+        }
+    }
+
+    fn show_notice(
+        &mut self,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        color: ratatui::style::Color,
+    ) {
+        self.notice = Some(Notice {
+            title: title.into(),
+            message: message.into(),
+            color,
+        });
+        self.overlay = Overlay::Notice;
     }
 
     fn select_allowed(&mut self) {
@@ -575,6 +654,11 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
 }
 
 fn draw(frame: &mut Frame, app: &App) {
+    // Paint every cell first. Do not rely on the terminal default background:
+    // it may be transparent or an image, which makes gaps between widgets and
+    // their text unreadable.
+    frame.render_widget(Clear, frame.area());
+    frame.render_widget(Block::default().style(theme::canvas()), frame.area());
     match app.screen {
         Screen::Boot => draw_boot(frame, app),
         Screen::Scan => draw_scan(frame, app),
@@ -595,6 +679,11 @@ fn draw(frame: &mut Frame, app: &App) {
         Overlay::Refused => {
             if let Some(item) = &app.refused {
                 modal::refused_modal(frame, item);
+            }
+        }
+        Overlay::Notice => {
+            if let Some(notice) = &app.notice {
+                modal::notice(frame, &notice.title, &notice.message, notice.color);
             }
         }
         Overlay::Help => modal::help_overlay(frame),
@@ -662,38 +751,142 @@ fn draw_boot(frame: &mut Frame, app: &App) {
 }
 
 fn draw_scan(frame: &mut Frame, app: &App) {
-    let area = frame.area();
+    // Scanning is transient feedback, not a dashboard. Keep the motion and
+    // information in one centered card so large terminals do not turn seven
+    // zero-byte progress bars into visual noise.
+    // Scale the card with the terminal. A fixed 84-column box looks tiny in
+    // an ultrawide window even though scanning is the only thing on screen.
+    let viewport = frame.area();
+    let card_w = ((viewport.width as u32 * 3) / 5) as u16;
+    let card_h = ((viewport.height as u32 * 2) / 3) as u16;
+    let area = modal::centered(
+        viewport,
+        card_w.clamp(84, 118),
+        card_h.clamp(19, 28).min(viewport.height),
+    );
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" scanning ")
+        .title(" ◌  SCANNING LOCAL STORAGE ")
         .title_style(theme::title())
-        .border_style(Style::default().fg(theme::CYAN));
+        .border_style(Style::default().fg(theme::CYAN))
+        .title_bottom(Line::from(Span::styled(" please wait ", theme::dim())).centered());
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
     let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let idx = (app.started.elapsed().as_millis() / 80) as usize % spinner.len();
+    let elapsed = app.started.elapsed().as_millis().saturating_sub(700);
+    let pulse = (elapsed / 80) as usize;
     let tools: Vec<&'static str> = adapters::all().iter().map(|a| a.id()).collect();
-    let step = (inner.height.saturating_sub(2) / tools.len().max(1) as u16).clamp(1, 3);
-    for (i, name) in tools.iter().enumerate() {
-        let found = app.inventory.tools.iter().find(|t| t.id == *name);
-        let bytes = found.map(|t| t.total_bytes()).unwrap_or(0);
-        let ratio = if app.scan_done {
-            1.0
-        } else {
-            ((app.started.elapsed().as_secs_f64() / 1.2) - i as f64 * 0.15).clamp(0.0, 0.92)
+    let active = ((elapsed / 260) as usize).min(tools.len().saturating_sub(1));
+    let active_name = tools.get(active).copied().unwrap_or("storage");
+    // The scan lanes deliberately span almost the whole card. They make use
+    // of ultrawide terminals without pretending that byte discovery has a
+    // meaningful percentage complete.
+    let grid_width = inner.width.saturating_sub(12).max(1);
+    let grid_x = inner.x + inner.width.saturating_sub(grid_width) / 2;
+    let signal_width = grid_width.saturating_sub(48) as usize;
+    // The content itself is centered vertically in the larger responsive
+    // card, leaving deliberate breathing room rather than dead space below.
+    let content_h = 21_u16.min(inner.height);
+    let content_y = inner.y + inner.height.saturating_sub(content_h) / 2;
+
+    let heading = Line::from(vec![
+        Span::styled(
+            format!(" {} ", spinner[pulse % spinner.len()]),
+            theme::accent(),
+        ),
+        Span::styled("Mapping ", theme::fg()),
+        Span::styled(active_name, theme::accent().add_modifier(Modifier::BOLD)),
+        Span::styled(" storage", theme::fg()),
+    ]);
+    frame.render_widget(
+        Paragraph::new(heading).centered(),
+        Rect::new(inner.x, content_y, inner.width, 1),
+    );
+
+    // A small travelling signal is much easier to read than a fake progress
+    // percentage. It continues to move while filesystem discovery is running.
+    let track_width = inner.width.saturating_sub(16) as usize;
+    let beam = pulse % track_width.max(1);
+    let mut sweep = Vec::with_capacity(track_width + 2);
+    sweep.push(Span::styled("[", theme::dim()));
+    for position in 0..track_width {
+        let distance = position.abs_diff(beam);
+        let style = match distance {
+            0 => theme::accent().add_modifier(Modifier::BOLD),
+            1 => Style::default().fg(theme::CYAN),
+            _ => theme::dim(),
         };
-        let gauge = Gauge::default()
-            .block(Block::default().title(format!(" {} {} ", spinner[idx], name)))
-            .gauge_style(Style::default().fg(theme::CYAN))
-            .ratio(ratio)
-            .label(util::bytes(bytes));
-        let row = Rect::new(
-            inner.x + 2,
-            inner.y + 2 + (i as u16) * step,
-            inner.width.saturating_sub(4),
-            step.saturating_sub(1).max(1),
+        sweep.push(Span::styled(if distance == 0 { "◆" } else { "─" }, style));
+    }
+    sweep.push(Span::styled("]", theme::dim()));
+    frame.render_widget(
+        Paragraph::new(Line::from(sweep)).centered(),
+        Rect::new(inner.x, content_y + 2, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("STATE       ", theme::dim().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "TOOL                ",
+                theme::dim().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "ACTIVITY       SIGNAL",
+                theme::dim().add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        Rect::new(grid_x, content_y + 5, grid_width, 1),
+    );
+
+    for (i, name) in tools.iter().enumerate() {
+        let done = app.scan_done || i < active;
+        let scanning = i == active && !app.scan_done;
+        let (state, activity, style) = if done {
+            (
+                "✓ DONE",
+                "INDEXED",
+                Style::default()
+                    .fg(theme::GREEN)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else if scanning {
+            (
+                "◌ ACTIVE",
+                "SCANNING",
+                theme::accent().add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("· QUEUED", "WAITING", theme::dim())
+        };
+        let mut spans = vec![
+            Span::styled(format!("{state:<12}"), style),
+            Span::styled(
+                format!("{name:<20}"),
+                theme::fg().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{activity:<12}"), style),
+        ];
+        for position in 0..signal_width {
+            let distance = position.abs_diff((pulse + i * 7) % signal_width.max(1));
+            let (glyph, signal_style) = if done {
+                ("━", Style::default().fg(theme::GREEN))
+            } else if scanning && distance == 0 {
+                ("◆", theme::accent().add_modifier(Modifier::BOLD))
+            } else if scanning && distance == 1 {
+                ("━", Style::default().fg(theme::CYAN))
+            } else if scanning {
+                ("─", theme::dim())
+            } else {
+                ("·", theme::dim())
+            };
+            spans.push(Span::styled(glyph, signal_style));
+        }
+        let row = Line::from(spans);
+        frame.render_widget(
+            Paragraph::new(row),
+            Rect::new(grid_x, content_y + 7 + i as u16, grid_width, 1),
         );
-        frame.render_widget(gauge, row);
     }
 }
 
@@ -1064,6 +1257,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     if app.status.is_empty() {
         let keys = [
             ("space", "toggle"),
+            ("enter", "finder"),
             ("a", "select"),
             ("d", "clean"),
             ("r", "restore"),
@@ -1102,6 +1296,7 @@ mod dash_tests {
     use super::*;
     use crate::model::ToolInventory;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
     use ratatui::Terminal;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -1180,6 +1375,44 @@ mod dash_tests {
     }
 
     #[test]
+    fn dashboard_paints_an_opaque_background_in_every_cell() {
+        let app = test_app();
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .all(|cell| cell.bg != Color::Reset),
+            "every cell needs an explicit background so terminal transparency cannot show through"
+        );
+    }
+
+    #[test]
+    fn scan_is_a_compact_centered_activity_card() {
+        let mut app = App::new();
+        app.screen = Screen::Scan;
+        let text = rendered(&app, 120, 36);
+
+        assert!(text.contains("SCANNING LOCAL STORAGE"));
+        assert!(text.contains("Mapping"));
+        assert!(text.contains("SCANNING"));
+        assert!(text.contains("QUEUED"));
+        assert!(
+            text.contains("◆"),
+            "the scan should show a moving sweep signal"
+        );
+        assert!(
+            !text.contains("0 B"),
+            "an in-progress scan must not present empty sizes as progress"
+        );
+    }
+
+    #[test]
     fn animations_settle_so_idle_throttle_kicks_in() {
         let app = test_app();
         assert!(
@@ -1245,5 +1478,15 @@ mod dash_tests {
             !app.anims_settled(),
             "fresh selection must keep frames flowing"
         );
+    }
+
+    #[test]
+    fn opening_an_item_without_a_path_explains_why() {
+        let mut app = test_app();
+        app.inventory.tools[0].items[0].paths.clear();
+
+        app.open_current_item();
+
+        assert_eq!(app.status, "No path available for Old plan files.");
     }
 }
