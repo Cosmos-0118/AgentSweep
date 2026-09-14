@@ -87,8 +87,13 @@ struct App {
     should_quit: bool,
     clean_progress: f64,
     clean_label: String,
+    clean_started: Option<Instant>,
+    clean_running: bool,
+    clean_handle: Option<thread::JoinHandle<()>>,
+    clean_tx: Option<mpsc::Sender<anyhow::Result<execute::ExecReport>>>,
     refresh_in_flight: bool,
     refresh_pending: bool,
+    refresh_handle: Option<thread::JoinHandle<()>>,
     next_refresh: Instant,
     pending_clean: Option<Vec<Item>>,
     fade_started: Option<Instant>,
@@ -130,8 +135,13 @@ impl App {
             should_quit: false,
             clean_progress: 0.0,
             clean_label: String::new(),
+            clean_started: None,
+            clean_running: false,
+            clean_handle: None,
+            clean_tx: None,
             refresh_in_flight: false,
             refresh_pending: false,
+            refresh_handle: None,
             next_refresh: Instant::now(),
             pending_clean: None,
             fade_started: None,
@@ -218,6 +228,27 @@ impl App {
     fn refresh_reclaim(&mut self) {
         let r = self.reclaimable();
         self.anim_reclaim.set(r as f64);
+    }
+
+    /// Labels of just-cleaned items that a fresh, post-clean scan still finds
+    /// with real bytes on disk - i.e. the move reported success but did not
+    /// stick. `pending_clean` is only Some between a clean starting and its
+    /// reconciliation scan landing, so this only ever fires for that window.
+    fn reappeared_after_clean(&self, inventory: &Inventory) -> Vec<String> {
+        let Some(items) = &self.pending_clean else {
+            return vec![];
+        };
+        items
+            .iter()
+            .filter(|pending| {
+                inventory
+                    .tools
+                    .iter()
+                    .flat_map(|t| t.items.iter())
+                    .any(|fresh| fresh.rule_id == pending.rule_id && fresh.bytes > 0)
+            })
+            .map(|item| item.label.clone())
+            .collect()
     }
 
     /// Replace the view only after a successful scan, while preserving
@@ -319,6 +350,15 @@ impl App {
                 self.fade_started = None;
                 self.screen = Screen::Dash;
                 self.status = "Cleanup cancelled.".into();
+                return;
+            }
+            // Once files are moving there is no safe rollback point: quitting
+            // here would abandon a partially-applied plan. Quit is re-enabled
+            // the moment the worker reports back and the screen leaves Cleaning.
+            if matches!(self.screen, Screen::Cleaning)
+                && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+            {
+                self.status = "Cleanup in progress; please wait for it to finish.".into();
                 return;
             }
             if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
@@ -613,41 +653,70 @@ impl App {
         }
     }
 
+    /// Hand the actual deletion/quarantine work to a worker thread. The real
+    /// work here is filesystem I/O and, for delegated items, external CLI
+    /// calls - either can take long enough that running it inline would
+    /// freeze the render loop and stop it from polling input, which reads to
+    /// a user exactly like a crash. Backgrounding it keeps the loop free to
+    /// keep drawing and responding to keys for the whole duration.
     fn run_clean(&mut self, items: Vec<Item>) {
         self.fade_started = None;
         self.overlay = Overlay::None;
         self.screen = Screen::Cleaning;
         self.clean_progress = 0.0;
+        self.clean_started = Some(Instant::now());
         self.clean_label = items.first().map(|i| i.label.clone()).unwrap_or_default();
+        // A scan already in flight (or one the periodic timer fires next) must
+        // never land mid-clean and be applied over paths that are actively
+        // being moved or deleted; the existing "pending refresh" discard path
+        // covers exactly this once a fresh scan is requested here.
+        self.request_refresh();
         match CleanPlan::try_new(items, self.mode, false) {
-            Ok(plan) => match execute::execute(&plan) {
-                Ok(report) => {
-                    self.status = if report.skipped.is_empty() {
-                        format!("Reclaimed {}.", util::bytes(report.bytes))
-                    } else {
-                        format!(
-                            "Cleanup incomplete: {}. Refreshing actual state.",
-                            report.skipped.join("; ")
-                        )
-                    };
-                    self.selected.clear();
-                    self.clean_progress = 1.0;
-                    self.request_refresh();
-                    self.screen = Screen::Reconciling;
-                }
-                Err(e) => {
-                    self.status = format!("Clean failed: {e}");
-                    // Earlier paths may have changed before this error. Read
-                    // the filesystem again instead of trusting the old rows.
-                    self.request_refresh();
-                    self.screen = Screen::Reconciling;
-                }
-            },
+            Ok(plan) => {
+                let Some(tx) = self.clean_tx.clone() else {
+                    self.pending_clean = None;
+                    self.screen = Screen::Dash;
+                    return;
+                };
+                self.clean_running = true;
+                self.clean_handle = Some(thread::spawn(move || {
+                    let _ = tx.send(execute::execute(&plan));
+                }));
+            }
             Err(_) => {
                 self.pending_clean = None;
                 self.screen = Screen::Dash;
             }
         }
+    }
+
+    /// Apply a finished (or crashed) clean worker's outcome. Shared by the
+    /// normal result path and the worker-panicked path so both leave the app
+    /// in the same recoverable state instead of one of them wedging the UI.
+    fn finish_clean(&mut self, result: anyhow::Result<execute::ExecReport>) {
+        self.clean_running = false;
+        self.clean_handle = None;
+        match result {
+            Ok(report) => {
+                self.status = if report.skipped.is_empty() {
+                    format!("Reclaimed {}.", util::bytes(report.bytes))
+                } else {
+                    format!(
+                        "Cleanup incomplete: {}. Refreshing actual state.",
+                        report.skipped.join("; ")
+                    )
+                };
+                self.selected.clear();
+            }
+            Err(e) => {
+                self.status = format!("Clean failed: {e}");
+            }
+        }
+        self.clean_progress = 1.0;
+        // Regardless of outcome, never trust the pre-clean snapshot again:
+        // read the filesystem fresh before showing anything as done.
+        self.request_refresh();
+        self.screen = Screen::Reconciling;
     }
 
     fn tick(&mut self, dt: f64, now: Instant) {
@@ -705,6 +774,8 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
     );
     let (tx, rx) = mpsc::channel::<anyhow::Result<Inventory>>();
+    let (clean_tx, clean_rx) = mpsc::channel::<anyhow::Result<execute::ExecReport>>();
+    app.clean_tx = Some(clean_tx);
     start_refresh(&mut app, &tx);
 
     let mut last = Instant::now();
@@ -713,39 +784,102 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         // A confirmation is a snapshot of exactly what the user reviewed.
         // Leave a completed scan queued until it is dismissed or acted on.
         if !matches!(app.overlay, Overlay::Confirm) {
-            if let Ok(result) = rx.try_recv() {
-                redraw = true;
-                app.refresh_in_flight = false;
-                app.next_refresh = Instant::now() + REFRESH_INTERVAL;
-                // A cleanup or manual refresh asked for newer data while this
-                // worker was running. Never briefly apply its stale snapshot.
-                if !app.refresh_pending {
-                    match result {
-                        Ok(inv) => {
-                            if app.status.starts_with("Refresh failed;") {
-                                app.status.clear();
+            match rx.try_recv() {
+                Ok(result) => {
+                    redraw = true;
+                    app.refresh_in_flight = false;
+                    app.refresh_handle = None;
+                    app.next_refresh = Instant::now() + REFRESH_INTERVAL;
+                    // A cleanup or manual refresh asked for newer data while this
+                    // worker was running. Never briefly apply its stale snapshot.
+                    if !app.refresh_pending {
+                        match result {
+                            Ok(inv) => {
+                                if app.status.starts_with("Refresh failed;") {
+                                    app.status.clear();
+                                }
+                                // The move/quarantine itself can report success
+                                // and still not stick (a rule matching more than
+                                // one on-disk location for the same data is one
+                                // concrete way that happens). Reconciling's whole
+                                // job is to check reality rather than trust that
+                                // report, so state the fact plainly instead of
+                                // silently leaving the "Reclaimed" status next to
+                                // a row that quietly came back - without guessing
+                                // at a cause this can't actually verify.
+                                if matches!(app.screen, Screen::Reconciling) {
+                                    let reappeared = app.reappeared_after_clean(&inv);
+                                    if !reappeared.is_empty() {
+                                        app.status = format!(
+                                            "{} still present after cleanup - the delete did not stick.",
+                                            reappeared.join(", ")
+                                        );
+                                    }
+                                }
+                                app.apply_inventory(inv);
+                                app.pending_clean = None;
+                                if matches!(app.screen, Screen::Reconciling) {
+                                    app.screen = Screen::Dash;
+                                }
+                                app.scan_done = true;
                             }
-                            app.apply_inventory(inv);
-                            app.pending_clean = None;
-                            if matches!(app.screen, Screen::Reconciling) {
-                                app.screen = Screen::Dash;
+                            Err(error) => {
+                                // Do not hide data merely because a background scan hit a
+                                // temporary error; the next interval will retry.
+                                app.status = format!(
+                                    "Refresh failed; keeping last verified view: {error}"
+                                );
+                                app.pending_clean = None;
+                                if matches!(app.screen, Screen::Reconciling) {
+                                    app.screen = Screen::Dash;
+                                }
+                                // The first scan must still leave the loading screen; an
+                                // empty-but-explicitly-stale dashboard is recoverable.
+                                app.scan_done = true;
                             }
-                            app.scan_done = true;
                         }
-                        Err(error) => {
-                            // Do not hide data merely because a background scan hit a
-                            // temporary error; the next interval will retry.
-                            app.status =
-                                format!("Refresh failed; keeping last verified view: {error}");
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // A worker that panics drops its Sender clone without ever
+                    // sending, and try_recv then stays Empty forever (the
+                    // original `tx` above keeps the channel open). Detect that
+                    // through the JoinHandle instead of hanging in Scan/Reconciling.
+                    if app.refresh_in_flight
+                        && app.refresh_handle.as_ref().is_some_and(|h| h.is_finished())
+                    {
+                        redraw = true;
+                        app.refresh_in_flight = false;
+                        app.refresh_handle = None;
+                        app.next_refresh = Instant::now() + REFRESH_INTERVAL;
+                        if !app.refresh_pending {
+                            app.status = "Refresh failed; keeping last verified view: scan worker crashed.".into();
                             app.pending_clean = None;
                             if matches!(app.screen, Screen::Reconciling) {
                                 app.screen = Screen::Dash;
                             }
-                            // The first scan must still leave the loading screen; an
-                            // empty-but-explicitly-stale dashboard is recoverable.
                             app.scan_done = true;
                         }
                     }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        if app.clean_running {
+            match clean_rx.try_recv() {
+                Ok(result) => {
+                    redraw = true;
+                    app.finish_clean(result);
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    if app.clean_handle.as_ref().is_some_and(|h| h.is_finished()) {
+                        redraw = true;
+                        app.finish_clean(Err(anyhow::anyhow!("clean worker crashed")));
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    redraw = true;
+                    app.finish_clean(Err(anyhow::anyhow!("clean worker crashed")));
                 }
             }
         }
@@ -757,7 +891,12 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         if !idle || redraw {
             terminal.draw(|f| draw(f, &app))?;
         }
-        let timeout = if idle {
+        // While a clean is running, the worker thread is the one doing the
+        // (unpredictable-length) work, so poll input on a short, steady
+        // cadence instead of blocking a whole frame on it.
+        let timeout = if app.clean_running {
+            Duration::from_millis(50)
+        } else if idle {
             Duration::from_millis(150)
         } else {
             FRAME.saturating_sub(last.elapsed())
@@ -791,9 +930,9 @@ fn start_refresh(app: &mut App, tx: &mpsc::Sender<anyhow::Result<Inventory>>) {
     app.refresh_in_flight = true;
     app.refresh_pending = false;
     let tx = tx.clone();
-    thread::spawn(move || {
+    app.refresh_handle = Some(thread::spawn(move || {
         let _ = tx.send(scan::inventory(None));
-    });
+    }));
 }
 
 fn draw(frame: &mut Frame, app: &App) {
@@ -1042,10 +1181,23 @@ fn draw_cleaning(frame: &mut Frame, app: &App) {
         .border_style(Style::default().fg(theme::GREEN));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    // Actual work happens on a worker thread and its true completion fraction
+    // isn't known up front, so a static bar would sit still for however long
+    // that takes and read as hung. Drive it off elapsed time instead so a
+    // slow-but-healthy cleanup still visibly moves.
+    let elapsed = app
+        .clean_started
+        .map(|started| started.elapsed().as_secs_f64())
+        .unwrap_or(0.0);
+    let ratio = if app.clean_running {
+        (0.5 - 0.5 * (elapsed * std::f64::consts::PI).cos()).clamp(0.03, 0.97)
+    } else {
+        app.clean_progress.clamp(0.0, 1.0)
+    };
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(theme::GREEN))
-        .ratio(app.clean_progress.clamp(0.0, 1.0))
-        .label(app.clean_label.clone());
+        .ratio(ratio)
+        .label(format!("{}  ({:.0}s)", app.clean_label, elapsed));
     let row = Rect::new(
         inner.x + 4,
         inner.y + inner.height / 2,
@@ -1696,6 +1848,28 @@ mod dash_tests {
     }
 
     #[test]
+    fn quit_is_refused_while_a_clean_is_actually_running() {
+        // Once execute() has started moving/deleting files there is no safe
+        // rollback point, so quitting here (unlike during the pre-clean fade)
+        // must not tear down the process out from under the worker thread.
+        let mut app = test_app();
+        app.screen = Screen::Cleaning;
+        app.clean_running = true;
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(matches!(app.screen, Screen::Cleaning));
+        assert!(!app.should_quit);
+        assert_eq!(
+            app.status,
+            "Cleanup in progress; please wait for it to finish."
+        );
+    }
+
+    #[test]
     fn inventory_refresh_reconciles_selection_without_losing_navigation() {
         let mut app = test_app();
         app.selected.insert("claude.plans".into());
@@ -1711,6 +1885,30 @@ mod dash_tests {
         app.apply_inventory(refreshed);
         assert!(app.selected.is_empty(), "gone items cannot stay selected");
         assert_eq!(app.selected_item, 0, "selection is clamped after refresh");
+    }
+
+    #[test]
+    fn reappearance_after_clean_is_detected_from_a_fresh_scan() {
+        // A move can report success and still not stick if something outside
+        // AgentSweep's control - another running tool sharing the same
+        // on-disk storage - recreates the path a moment later. This is what
+        // actually happened with a real Windsurf/Cascade `code_tracker`
+        // directory: the quarantine succeeded, but a fresh scan moments
+        // later still found real bytes at the same rule_id.
+        let mut app = test_app();
+        let cleaned = app.inventory.tools[0].items.clone();
+        app.pending_clean = Some(cleaned);
+
+        let mut still_present = app.inventory.clone();
+        still_present.tools[0].items[0].bytes = 4096;
+        assert_eq!(
+            app.reappeared_after_clean(&still_present),
+            vec!["Old plan files".to_string()]
+        );
+
+        let mut actually_gone = app.inventory.clone();
+        actually_gone.tools[0].items.clear();
+        assert!(app.reappeared_after_clean(&actually_gone).is_empty());
     }
 
     #[test]

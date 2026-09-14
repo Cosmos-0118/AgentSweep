@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use crate::adapters;
 use crate::adapters::opencode;
@@ -34,15 +34,13 @@ fn claude_purge(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
     } else {
         args.push("-y");
     }
-    let status = Command::new("claude")
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    // A purge across many transcripts is real work, not a quick query: give it
+    // minutes, not the few-second budget used for read-only CLI calls,
+    // while still guaranteeing this can never hang the caller forever.
+    let status = adapters::run_status_with_timeout("claude", &args, Duration::from_secs(180));
     match status {
-        Ok(s) if s.success() => Ok(bytes),
-        Ok(_) | Err(_) => {
+        Some(s) if s.success() => Ok(bytes),
+        Some(_) | None => {
             if dry_run {
                 return Ok(bytes);
             }

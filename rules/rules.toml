@@ -488,6 +488,7 @@ root = "app"
 label = "Local file history"
 paths = ["User/History"]
 risk = "userdata"
+requires_stopped = true
 consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
 
 [[rule]]
@@ -620,6 +621,7 @@ root = "app"
 label = "Local file history"
 paths = ["User/History"]
 risk = "userdata"
+requires_stopped = true
 consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
 
 [[rule]]
@@ -675,6 +677,7 @@ root = "codeium"
 label = "Downloaded browser binaries"
 paths = ["ws-browser"]
 risk = "review"
+requires_stopped = true
 consequence = "Downloaded embedded Chromium/ffmpeg binaries used by Windsurf's browser preview tools. Re-downloaded automatically on next use; can be slow to refetch."
 
 [[rule]]
@@ -693,6 +696,7 @@ root = "codeium"
 label = "Cascade sessions"
 paths = ["cascade", "windsurf/cascade"]
 risk = "userdata"
+requires_stopped = true
 consequence = "Cascade agent chat/session data. Deleting removes chat history for those sessions."
 
 [[rule]]
@@ -720,6 +724,7 @@ root = "codeium"
 label = "Edit history tracker"
 paths = ["code_tracker", "windsurf/code_tracker"]
 risk = "userdata"
+requires_stopped = true
 consequence = "Local file-edit history used for Cascade's change tracking. Deleting loses that edit history."
 
 [[rule]]
@@ -729,6 +734,7 @@ root = "codeium"
 label = "Code index cache"
 paths = ["windsurf/codemaps"]
 risk = "review"
+requires_stopped = true
 consequence = "Codebase indexing cache used for code search. Regenerates on next index; re-indexing large repos can be slow."
 
 [[rule]]
@@ -777,6 +783,7 @@ root = "app"
 label = "Local file history"
 paths = ["User/History"]
 risk = "userdata"
+requires_stopped = true
 consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
 
 [[rule]]
@@ -871,6 +878,7 @@ root = "app"
 label = "Local file history"
 paths = ["User/History"]
 risk = "userdata"
+requires_stopped = true
 consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
 
 [[rule]]
@@ -974,6 +982,7 @@ root = "app"
 label = "Local file history"
 paths = ["User/History"]
 risk = "userdata"
+requires_stopped = true
 consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
 
 [[rule]]

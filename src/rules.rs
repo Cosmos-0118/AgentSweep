@@ -63,20 +63,28 @@ mod tests {
     }
 
     #[test]
-    fn safe_and_review_electron_app_dirs_require_stopped() {
+    fn live_app_state_requires_stopped_regardless_of_risk_tier() {
         // Chromium/Electron cache and webview dirs (Cache, DIPS, Cookies, ...)
-        // under an editor's live "app" or "desktop" root are actively
-        // written to while the app runs. Auto-cleanable (safe/review) rules
-        // that touch them must refuse to run while that tool is open, the
+        // under an editor's live "app"/"desktop" root, and Windsurf's Cascade
+        // working directory (~/.codeium), are actively rewritten by the
+        // running app. That's just as true for a Userdata rule as for an
+        // auto-cleanable one: `windsurf.codeium.code_tracker` used to skip
+        // this, and holding it selected, confirming the delete, and watching
+        // it fade out only for the running app to silently recreate the file
+        // before the next scan landed - it "reappeared" with no explanation,
+        // even though the consequence text promised the history was gone.
+        // Every rule here must refuse to run while its tool is open, the
         // same way codex.tmp and opencode.tmp already do.
         let rules = load().unwrap();
         for rule in &rules {
-            let root_is_live_app = rule.root == "app" || rule.root == "desktop";
-            let risk_is_auto_cleanable = matches!(rule.risk, Risk::Safe | Risk::Review);
-            if root_is_live_app && risk_is_auto_cleanable {
+            let root_is_live_app = matches!(rule.root.as_str(), "app" | "desktop")
+                || (rule.tool == "windsurf" && rule.root == "codeium");
+            let risk_touches_real_files =
+                matches!(rule.risk, Risk::Safe | Risk::Review | Risk::Userdata);
+            if root_is_live_app && risk_touches_real_files {
                 assert!(
                     rule.requires_stopped,
-                    "{} touches a live app/desktop root and is {:?} but does not require_stopped",
+                    "{} touches a live app root and is {:?} but does not require_stopped",
                     rule.id, rule.risk
                 );
             }

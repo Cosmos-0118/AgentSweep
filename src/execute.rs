@@ -70,6 +70,19 @@ pub fn execute(plan: &CleanPlan) -> anyhow::Result<ExecReport> {
         created: Local::now().to_rfc3339(),
         items: vec![],
     };
+    // Quarantine at least one item as soon as it lands, not only once every
+    // item is processed. A crash, kill, or power loss partway through must
+    // still leave a manifest that accounts for whatever was already moved -
+    // that's the only thing that makes "recoverable from quarantine" true.
+    let will_quarantine = plan
+        .items()
+        .iter()
+        .any(|i| i.delegate.is_none() && matches!(i.risk, Risk::Review | Risk::Userdata));
+    if will_quarantine {
+        fs::create_dir_all(&qroot)?;
+        write_manifest(&qroot, &manifest)?;
+        report.id = Some(id.clone());
+    }
 
     for item in plan.items() {
         if let Some(delegate) = &item.delegate {
@@ -103,6 +116,10 @@ pub fn execute(plan: &CleanPlan) -> anyhow::Result<ExecReport> {
                         original: p.clone(),
                         quarantined: dest.clone(),
                     });
+                    // Rewrite after every move, not once at the end: the file on
+                    // disk always reflects exactly what has actually been moved
+                    // so far, so a restore is never missing an entry.
+                    write_manifest(&qroot, &manifest)?;
                     report.quarantined.push(p.clone());
                     report.bytes += n;
                 }
@@ -111,23 +128,40 @@ pub fn execute(plan: &CleanPlan) -> anyhow::Result<ExecReport> {
         }
     }
 
-    if !manifest.items.is_empty() {
-        fs::create_dir_all(&qroot)?;
-        fs::write(
-            qroot.join("manifest.json"),
-            serde_json::to_vec_pretty(&manifest)?,
-        )?;
-        report.id = Some(id);
-    }
     Ok(report)
 }
 
+fn write_manifest(qroot: &Path, manifest: &Manifest) -> anyhow::Result<()> {
+    fs::write(
+        qroot.join("manifest.json"),
+        serde_json::to_vec_pretty(manifest)?,
+    )?;
+    Ok(())
+}
+
+/// A rule can list more than one candidate path for the same data (e.g. a
+/// legacy layout and a current one), and those candidates can share a
+/// basename. Naively joining just the basename would then point two
+/// different sources at the same destination: on macOS/APFS a rename onto an
+/// already-occupied destination silently replaces or nests into it depending
+/// on what's there, either way aliasing away the first item's quarantine
+/// slot. Check for that collision and disambiguate instead. Paths within one
+/// item are quarantined in order, so by the time a later path is checked
+/// here, any earlier destination it could collide with already exists on
+/// disk - no bookkeeping beyond the filesystem itself is needed.
 fn quarantine_dest(qroot: &Path, item: &Item, original: &Path) -> PathBuf {
     let name = original
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "item".into());
-    qroot.join(&item.tool).join(&item.rule_id).join(name)
+    let base = qroot.join(&item.tool).join(&item.rule_id);
+    let mut dest = base.join(&name);
+    let mut suffix = 2;
+    while dest.exists() {
+        dest = base.join(format!("{name}-{suffix}"));
+        suffix += 1;
+    }
+    dest
 }
 
 fn move_path(src: &Path, dest: &Path) -> anyhow::Result<()> {

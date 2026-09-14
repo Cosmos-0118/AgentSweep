@@ -56,18 +56,14 @@ pub fn by_id(id: &str) -> Option<Box<dyn Adapter>> {
     all().into_iter().find(|a| a.id() == id)
 }
 
-pub fn capture(cmd: &str, args: &[&str]) -> Option<String> {
-    let mut child = Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + Duration::from_secs(3);
+/// Poll a child until it exits or `timeout` elapses, killing it on timeout so
+/// a hung CLI can never block the caller (and, transitively, the UI thread)
+/// indefinitely.
+fn wait_timeout(child: &mut std::process::Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => return Some(status),
             Ok(None) => {}
             Err(_) => {
                 let _ = child.kill();
@@ -82,11 +78,42 @@ pub fn capture(cmd: &str, args: &[&str]) -> Option<String> {
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+pub fn capture(cmd: &str, args: &[&str]) -> Option<String> {
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    wait_timeout(&mut child, Duration::from_secs(3))?;
     let output = child.wait_with_output().ok()?;
     if !output.status.success() {
         return None;
     }
     String::from_utf8(output.stdout).ok()
+}
+
+/// Run a command for its exit status only, bounded by `timeout`. Unlike
+/// `capture`'s fixed 3s budget (meant for quick read-only queries), callers
+/// that shell out to a mutating operation (e.g. a purge) pick their own
+/// budget so a slow-but-successful run isn't killed early, while a genuinely
+/// hung process still can't block forever.
+pub fn run_status_with_timeout(
+    cmd: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+    let mut child = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    wait_timeout(&mut child, timeout)
 }
 
 pub fn process_running(names: &[&str]) -> bool {
