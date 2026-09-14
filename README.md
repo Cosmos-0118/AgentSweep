@@ -13,9 +13,13 @@ of `rm -rf`.
 **Homebrew (macOS/Linux):**
 
 ```bash
+brew trust Cosmos-0118/agentsweep   # only needed on Homebrew versions that gate third-party taps
 brew tap Cosmos-0118/agentsweep
 brew install agentsweep
 ```
+
+If your Homebrew doesn't have `brew trust` (older versions don't require it),
+just skip that line and run the `tap`/`install` commands.
 
 **From source:**
 
