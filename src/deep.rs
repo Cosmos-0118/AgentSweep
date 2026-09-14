@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::adapters;
-use crate::adapters::{composer_chat, opencode, vscode};
+use crate::adapters::{codex, composer_chat, opencode, vscode};
 use crate::model::Item;
 use crate::util;
 
@@ -22,11 +22,50 @@ pub fn run(delegate: &str, item: &Item, dry_run: bool) -> anyhow::Result<u64> {
         }
         "opencode.session_delete" => opencode_sessions(item, dry_run),
         "opencode.snapshot_prune" => prune_paths(item, dry_run),
+        "codex.standalone_prune" => codex_standalone_prune(item, dry_run),
         "opencode.legacy_guard" => {
             anyhow::bail!("legacy OpenCode storage is protected")
         }
         other => anyhow::bail!("unknown delegate {other}"),
     }
+}
+
+/// A standalone release can become `current` between scanning and cleanup if
+/// Codex starts, updates, or rolls back. Re-resolve the managed layout before
+/// removing each selected directory; generic safe-file deletion is not safe
+/// enough for this pointer-based layout.
+fn codex_standalone_prune(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
+    if adapters::by_id("codex")
+        .map(|adapter| adapter.is_running())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Codex is running");
+    }
+    if dry_run {
+        return Ok(item.bytes);
+    }
+    let home = adapters::by_id("codex")
+        .and_then(|adapter| adapter.roots().get("home").cloned())
+        .ok_or_else(|| anyhow::anyhow!("Codex home is unavailable"))?;
+    let mut removed = 0;
+    for path in &item.paths {
+        if adapters::by_id("codex")
+            .map(|adapter| adapter.is_running())
+            .unwrap_or(false)
+        {
+            anyhow::bail!("Codex started during release pruning");
+        }
+        let candidates = codex::standalone_releases_to_prune(&home);
+        if !candidates.iter().any(|candidate| candidate == path) {
+            anyhow::bail!(
+                "release layout changed; refusing to remove {}",
+                path.display()
+            );
+        }
+        removed += util::disk_usage_recursive(path);
+        remove_path(path)?;
+    }
+    Ok(removed)
 }
 
 fn claude_purge(item: &Item, dry_run: bool) -> anyhow::Result<u64> {

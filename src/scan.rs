@@ -38,7 +38,8 @@ fn scan_tool(adapter: &dyn Adapter, rules: &[Rule]) -> ToolInventory {
         .into_par_iter()
         .filter(|(_, p)| p.exists())
         .flat_map(|(root_key, root_path)| {
-            let claimed = claimed_top_level(rules, adapter.id(), root_key);
+            let mut claimed = claimed_top_level(rules, adapter.id(), root_key);
+            claimed.extend(adapter.claimed_top_level(root_key));
             unknown_entries(adapter.id(), root_key, root_path, &claimed, &roots)
         })
         .collect();

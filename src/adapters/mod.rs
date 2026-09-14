@@ -39,6 +39,11 @@ pub trait Adapter: Send + Sync {
     fn running_processes(&self) -> Vec<String> {
         find_running(&[self.id()])
     }
+    /// Top-level paths the adapter maps dynamically rather than through the
+    /// static rules file. They must not be reported again as unknown.
+    fn claimed_top_level(&self, _root: &str) -> Vec<String> {
+        vec![]
+    }
     fn enrich(&self, _items: &mut Vec<Item>) {}
 }
 

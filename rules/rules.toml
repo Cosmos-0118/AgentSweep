@@ -104,7 +104,7 @@ id = "codex.config"
 tool = "codex"
 root = "home"
 label = "Configuration"
-paths = ["config.toml", "AGENTS.md", "hooks.json", "keybindings.json", "skills", "rules"]
+paths = ["config.toml", "AGENTS.md", "hooks.json", "hooks.json.bak", "keybindings.json", "skills", "rules", "agents", "automations"]
 risk = "critical"
 consequence = "Codex settings, skills, hooks and keybindings. Never deleted."
 
@@ -113,9 +113,9 @@ id = "codex.state"
 tool = "codex"
 root = "home"
 label = "Live session state"
-paths = ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"]
+paths = ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm", "thread_history_1.sqlite", "thread_history_1.sqlite-wal", "thread_history_1.sqlite-shm", "thread-writer-locks"]
 risk = "critical"
-consequence = "Thread/session indexes. Deleting this corrupts resume. Never deleted."
+consequence = "Thread/session history and writer coordination. SQLite WAL/SHM files are part of the database state. Never deleted."
 
 [[rule]]
 id = "codex.memories"
@@ -145,13 +145,52 @@ risk = "critical"
 consequence = "Installed plugin payloads live here, including plugins/cache. Deleting them leaves plugins marked installed but empty. Never deleted."
 
 [[rule]]
-id = "codex.unknown.extra"
+id = "codex.desktop_state"
 tool = "codex"
 root = "home"
-label = "Unclassified Codex data"
-paths = ["ipc", "pets", "automations", "node_repl", "telemetry", "dictation-history", "packages", "agents"]
-risk = "unknown"
-consequence = "Not in the known Codex storage map. Shown for size only. Never deleted."
+label = "Codex identity and desktop state"
+paths = ["pets", ".codex-global-state.json", ".codex-global-state.json.bak", "installation_id", "external_agent_session_imports.json", "chrome-native-hosts-v2.json", ".sandbox_migration", ".personality_migration"]
+risk = "critical"
+consequence = "Custom pets, installation identity, imported-session ledger, browser registration and persistent desktop/migration state. Never deleted."
+
+[[rule]]
+id = "codex.sqlite"
+tool = "codex"
+root = "home"
+label = "Codex SQLite state"
+paths = ["sqlite"]
+risk = "critical"
+consequence = "Active Codex databases. This is application state, not SQLite cache. Never deleted."
+
+[[rule]]
+id = "codex.process_manager"
+tool = "codex"
+root = "home"
+label = "Reset stale process state"
+paths = ["process_manager"]
+risk = "review"
+requires_stopped = true
+consequence = "Rebuildable process bookkeeping. Reset only when Codex is fully closed; active process tracking is lost."
+
+[[rule]]
+id = "codex.vendor_imports"
+tool = "codex"
+root = "home"
+label = "Managed vendor skill checkout"
+paths = ["vendor_imports/skills"]
+risk = "review"
+requires_stopped = true
+consequence = "Known managed recommended-skill checkout. Codex can re-download it when needed; other vendor-import data is not selected."
+
+[[rule]]
+id = "codex.version_cache"
+tool = "codex"
+root = "home"
+label = "Version check cache"
+paths = ["version.json"]
+risk = "safe"
+requires_stopped = true
+consequence = "Cached latest-version check. Codex refreshes it automatically."
 
 [[rule]]
 id = "claude.plans"
@@ -380,20 +419,77 @@ id = "codex.desktop.cache"
 tool = "codex"
 root = "desktop"
 label = "Desktop app caches"
-paths = ["Crashpad", "Safe Browsing", "ChromeFeatureState", "CertificateRevocation", "SafetyTips", "SSLErrorAssistant", "PrivacySandboxAttestationsPreloaded", "FirstPartySetsPreloaded", "OnDeviceHeadSuggestModel", "WasmTtsEngine", "ZxcvbnData", "BrowserMetrics-spare.pma", "GrShaderCache", "GraphiteDawnCache"]
+paths = ["Crashpad", "component_crx_cache", "extensions_crx_cache", "BrowserMetrics-spare.pma", "GrShaderCache", "GraphiteDawnCache"]
 risk = "safe"
 requires_stopped = true
-consequence = "Standard Chromium component/safe-browsing caches used by the Codex desktop app. Regenerated automatically."
+consequence = "Crash reports and Chromium download/render caches. Regenerated automatically when Codex is closed."
 
 [[rule]]
 id = "codex.desktop.profile"
 tool = "codex"
 root = "desktop"
-label = "Desktop app profile"
+label = "Reset desktop browser profile"
 paths = ["Default"]
 risk = "review"
 requires_stopped = true
-consequence = "Codex desktop app's embedded browser profile (cache, local storage, cookies). Not documented as safe; may include sign-in state."
+consequence = "Resets the embedded Chromium profile, including the Codex browser partition, local storage, cookies and session state. Not routine cleanup."
+
+[[rule]]
+id = "codex.desktop.local_state"
+tool = "codex"
+root = "desktop"
+label = "Desktop browser engine state"
+paths = ["Local State"]
+risk = "critical"
+consequence = "Chromium installation-wide preferences and runtime metadata. Reset only as targeted troubleshooting; never auto-deleted."
+
+[[rule]]
+id = "codex.desktop_feature_state"
+tool = "codex"
+root = "desktop"
+label = "Reset Codex feature state"
+paths = ["owl-feature-bootstrap-cache.json", "statsig-state.json", "statsig-state.json.bak", "browser-sidebar-page-states.json", "first_party_sets.db", "first_party_sets.db-journal", "segmentation_platform"]
+risk = "review"
+requires_stopped = true
+consequence = "Feature-gate, sidebar and browser-derived state. Recreated after a reset, but may change feature availability or browser restoration."
+
+[[rule]]
+id = "codex.desktop_components"
+tool = "codex"
+root = "desktop"
+label = "Rebuildable Chromium components"
+paths = ["WidevineCdm", "OptimizationHints", "Subresource Filter", "PKIMetadata", "Crowd Deny", "ActorSafetyLists", "CaptchaProviders", "TrustTokenKeyCommitments", "MEIPreload", "FileTypePolicies", "AmountExtractionHeuristicRegexes", "WasmTtsEngine", "OnDeviceHeadSuggestModel", "ZxcvbnData", "CertificateRevocation", "SafetyTips", "FirstPartySetsPreloaded", "SSLErrorAssistant", "ChromeFeatureState"]
+risk = "review"
+requires_stopped = true
+consequence = "Downloaded browser components. They can be re-downloaded, but security and browser features may be stale until then; leave them by default."
+
+[[rule]]
+id = "codex.desktop.browser_partition"
+tool = "codex"
+root = "desktop"
+label = "Reset Codex browser partition"
+paths = ["codex-browser-app"]
+risk = "review"
+requires_stopped = true
+consequence = "Resets Codex's embedded browser cookies, local storage and session state. Use only to troubleshoot browser state."
+
+[[rule]]
+id = "codex.desktop.last_version"
+tool = "codex"
+root = "desktop"
+label = "Desktop version metadata"
+paths = ["Last Version"]
+risk = "critical"
+consequence = "Tiny Chromium compatibility metadata. Leave it managed by Codex; never auto-deleted."
+
+[[rule]]
+id = "codex.desktop.sentry"
+tool = "codex"
+root = "desktop"
+label = "Diagnostic report state"
+paths = ["sentry"]
+risk = "unknown"
+consequence = "May contain queued crash or diagnostic reports. Inspect its contents before any manual cleanup."
 
 [[rule]]
 id = "claude.desktop.cache"
