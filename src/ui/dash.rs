@@ -212,7 +212,8 @@ impl App {
     }
 
     /// True when every animation has settled, so the dashboard can skip
-    /// redraws and idle instead of burning CPU at 60fps.
+    /// redraws and idle instead of burning CPU at 60fps. A live source keeps
+    /// its runner moving, so it deliberately prevents that idle path.
     fn anims_settled(&self) -> bool {
         const EPS: f64 = 0.5001; // Animated::tick snaps within 0.5
         self.anim_total.value() == self.anim_total.target()
@@ -222,6 +223,7 @@ impl App {
                 .iter()
                 .all(|b| (b.value() - b.target()).abs() < EPS)
             && self.shake == 0.0
+            && !self.inventory.tools.iter().any(|tool| tool.running)
     }
 
     fn current_tool_id(&self) -> &str {
@@ -1392,7 +1394,7 @@ fn draw_dash(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(7),
+            Constraint::Length(6),
             Constraint::Min(6),
             Constraint::Length(4),
             Constraint::Length(2),
@@ -1468,7 +1470,7 @@ fn draw_tools(frame: &mut Frame, app: &App, area: Rect) {
         .title_style(theme::title())
         .title_bottom(
             Line::from(Span::styled(
-                " ← → switch source  ·  bars show risk profile ",
+                " ← → switch source  ·  live sources pulse ",
                 theme::dim(),
             ))
             .right_aligned(),
@@ -1478,8 +1480,7 @@ fn draw_tools(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let vis = app.visible_tools();
-    let legend_row = if inner.height >= 5 { 1 } else { 0 };
-    let visible_rows = inner.height.saturating_sub(legend_row) as usize;
+    let visible_rows = inner.height as usize;
     let start = scroll_start(app.selected_tool, vis.len(), visible_rows);
     for (row, &idx) in vis.iter().enumerate().skip(start).take(visible_rows) {
         let tool = &app.inventory.tools[idx];
@@ -1489,7 +1490,8 @@ fn draw_tools(frame: &mut Frame, app: &App, area: Rect) {
             break;
         }
         let label_width = 36.min(inner.width) as usize;
-        let name_width = label_width.saturating_sub(14);
+        let runner_width = usize::from(tool.running) * 9;
+        let name_width = label_width.saturating_sub(12 + runner_width);
         let marker = if selected { "▌ " } else { "  " };
         let marker_style = if selected {
             theme::accent().add_modifier(Modifier::BOLD)
@@ -1507,14 +1509,23 @@ fn draw_tools(frame: &mut Frame, app: &App, area: Rect) {
                 format!("{:<name_width$}", trunc(&tool.id, name_width)),
                 name_style,
             ),
-            Span::styled(
-                format!("{:>10}", util::bytes(tool.total_bytes())),
-                theme::fg().add_modifier(Modifier::BOLD),
-            ),
         ];
-        if tool.running && label_width >= 34 {
-            spans.push(Span::styled(" ● LIVE", Style::default().fg(theme::GREEN)));
+        if tool.running {
+            // Alternate the runner's arms in place instead of sliding a
+            // picture through the bar, so the source name itself feels live.
+            let runner = ["ᕕ(•‿•)ᕗ", "ᕗ(•‿•)ᕕ"];
+            let frame = (app.started.elapsed().as_millis() / 140) as usize;
+            spans.push(Span::styled(
+                format!(" {}", runner[frame % runner.len()]),
+                Style::default()
+                    .fg(theme::GREEN)
+                    .add_modifier(Modifier::BOLD),
+            ));
         }
+        spans.push(Span::styled(
+            format!("{:>10}", util::bytes(tool.total_bytes())),
+            theme::fg().add_modifier(Modifier::BOLD),
+        ));
         frame.render_widget(
             Paragraph::new(Line::from(spans)),
             Rect::new(inner.x, y, label_width as u16, 1),
@@ -1539,28 +1550,6 @@ fn draw_tools(frame: &mut Frame, app: &App, area: Rect) {
             scrollbar,
             Rect::new(area.x, inner.y, area.width, visible_rows as u16),
             &mut sb_state,
-        );
-    }
-    // Keep the legend intentionally terse: the dashboard header owns the
-    // aggregate size, while this row simply makes the bar colors legible.
-    if inner.height >= 5 {
-        let ly = inner.y + inner.height - 1;
-        let legend = |risk: Risk, name: &'static str| {
-            vec![
-                Span::styled(" ● ", Style::default().fg(theme::risk_color(risk))),
-                Span::styled(name, theme::dim().add_modifier(Modifier::BOLD)),
-                Span::raw("  "),
-            ]
-        };
-        let mut spans = vec![Span::styled(" RISK  ", theme::dim())];
-        spans.extend(legend(Risk::Safe, "safe"));
-        spans.extend(legend(Risk::Review, "review"));
-        spans.extend(legend(Risk::Userdata, "data"));
-        spans.extend(legend(Risk::Critical, "protected"));
-        spans.extend(legend(Risk::Unknown, "other"));
-        frame.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect::new(inner.x, ly, inner.width, 1),
         );
     }
 }
@@ -1909,9 +1898,6 @@ mod dash_tests {
             "detail pane shows the full consequence"
         );
         assert!(text.contains("storage by source"));
-        for word in ["safe", "review", "data", "protected", "other"] {
-            assert!(text.contains(word), "legend shows {word}");
-        }
         assert!(text.contains("reclaimable"), "footer renders");
         for word in [
             "toggle", "select", "clean", "restore", "optimize", "help", "quit",
@@ -1935,6 +1921,19 @@ mod dash_tests {
                 .iter()
                 .all(|cell| cell.bg != Color::Reset),
             "every cell needs an explicit background so terminal transparency cannot show through"
+        );
+    }
+
+    #[test]
+    fn running_tool_keeps_the_dashboard_animating() {
+        let mut app = test_app();
+        app.inventory.tools[0].running = true;
+
+        let text = rendered(&app, 120, 30);
+        assert!(text.contains("ᕕ") || text.contains("ᕗ"));
+        assert!(
+            !app.anims_settled(),
+            "a running source must keep the runner redraw loop active"
         );
     }
 
