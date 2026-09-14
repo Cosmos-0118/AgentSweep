@@ -41,10 +41,21 @@ pub fn is_older_than(t: SystemTime, days: u32) -> bool {
 }
 
 pub fn disk_usage(path: &Path) -> u64 {
-    let meta = match path.symlink_metadata() {
-        Ok(m) => m,
-        Err(_) => return 0,
-    };
+    match path.symlink_metadata() {
+        Ok(m) => disk_usage_from_meta(&m),
+        Err(_) => 0,
+    }
+}
+
+pub fn path_mtime(path: &Path) -> Option<SystemTime> {
+    path.symlink_metadata().ok().and_then(|m| m.modified().ok())
+}
+
+/// Size and mtime from a `Metadata` already in hand. A directory walk that
+/// wants both (as the scanner does for every entry) should stat once and call
+/// these, rather than calling `disk_usage`/`path_mtime` separately and paying
+/// for the same `symlink_metadata` syscall twice per file.
+pub fn disk_usage_from_meta(meta: &std::fs::Metadata) -> u64 {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -60,8 +71,8 @@ pub fn disk_usage(path: &Path) -> u64 {
     }
 }
 
-pub fn path_mtime(path: &Path) -> Option<SystemTime> {
-    path.symlink_metadata().ok().and_then(|m| m.modified().ok())
+pub fn mtime_from_meta(meta: &std::fs::Metadata) -> Option<SystemTime> {
+    meta.modified().ok()
 }
 
 pub fn parse_days(s: &str) -> anyhow::Result<u32> {

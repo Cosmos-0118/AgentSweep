@@ -132,7 +132,7 @@ pub struct Rule {
     pub delegate: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Item {
     pub rule_id: String,
     pub tool: String,
@@ -160,7 +160,7 @@ impl Item {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToolInventory {
     pub id: String,
     pub version: Option<String>,
@@ -184,7 +184,7 @@ impl ToolInventory {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Inventory {
     pub tools: Vec<ToolInventory>,
 }
@@ -196,6 +196,30 @@ impl Inventory {
 
     pub fn bytes_by_risk(&self, risk: Risk) -> u64 {
         self.tools.iter().map(|t| t.bytes_by_risk(risk)).sum()
+    }
+
+    /// Whether two scans show the same reclaimable picture, ignoring fields
+    /// that legitimately churn on every scan even when nothing a user would
+    /// care about changed: mtimes inside a cache an open editor keeps
+    /// touching, and the live `running` process probe. Backing off periodic
+    /// rescans on full struct equality would never fire while any tool is
+    /// open, which is the common case - so this is the comparison the
+    /// refresh backoff should use instead.
+    pub fn same_reclaimable_shape(&self, other: &Inventory) -> bool {
+        fn fingerprint(inv: &Inventory) -> Vec<(&str, &str, u64)> {
+            let mut v: Vec<_> = inv
+                .tools
+                .iter()
+                .flat_map(|t| {
+                    t.items
+                        .iter()
+                        .map(move |i| (t.id.as_str(), i.rule_id.as_str(), i.bytes))
+                })
+                .collect();
+            v.sort();
+            v
+        }
+        fingerprint(self) == fingerprint(other)
     }
 
     pub fn filtered<'a>(
@@ -287,6 +311,44 @@ mod tests {
             newest_mtime: None,
             delegate: None,
         }
+    }
+
+    fn inventory_with(bytes: u64, mtime: Option<std::time::SystemTime>, running: bool) -> Inventory {
+        let mut i = item(Risk::Safe);
+        i.bytes = bytes;
+        i.newest_mtime = mtime;
+        Inventory {
+            tools: vec![ToolInventory {
+                id: "codex".into(),
+                version: None,
+                detected: true,
+                running,
+                roots: std::collections::BTreeMap::new(),
+                items: vec![i],
+            }],
+        }
+    }
+
+    #[test]
+    fn same_reclaimable_shape_ignores_mtime_and_running_churn() {
+        let now = std::time::SystemTime::now();
+        let later = now + std::time::Duration::from_secs(10);
+        let a = inventory_with(4096, Some(now), false);
+        let b = inventory_with(4096, Some(later), true);
+        assert!(
+            a.same_reclaimable_shape(&b),
+            "mtime ticking and a process starting up must not look like a change"
+        );
+    }
+
+    #[test]
+    fn same_reclaimable_shape_detects_a_real_byte_change() {
+        let a = inventory_with(4096, None, false);
+        let b = inventory_with(8192, None, false);
+        assert!(
+            !a.same_reclaimable_shape(&b),
+            "a changed reclaimable size must be detected"
+        );
     }
 
     #[test]

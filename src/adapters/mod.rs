@@ -81,6 +81,16 @@ fn wait_timeout(child: &mut std::process::Child, timeout: Duration) -> Option<st
 }
 
 pub fn capture(cmd: &str, args: &[&str]) -> Option<String> {
+    capture_with_timeout(cmd, args, Duration::from_secs(3))
+}
+
+/// Like `capture`, but with a caller-chosen budget instead of the fixed 3s
+/// default. A liveness probe run on every periodic scan (e.g. `is_running`)
+/// needs a much tighter budget than a one-time, cached lookup: a slow CLI
+/// that never returns inside 3s otherwise taxes every single refresh cycle
+/// by that full 3s, even though a fast, always-available fallback (a plain
+/// process-list check) is right there.
+pub fn capture_with_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Option<String> {
     let mut child = Command::new(cmd)
         .args(args)
         .stdin(Stdio::null())
@@ -88,7 +98,7 @@ pub fn capture(cmd: &str, args: &[&str]) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    wait_timeout(&mut child, Duration::from_secs(3))?;
+    wait_timeout(&mut child, timeout)?;
     let output = child.wait_with_output().ok()?;
     if !output.status.success() {
         return None;

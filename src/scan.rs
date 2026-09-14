@@ -205,7 +205,11 @@ fn measure(
         .flatten()
     {
         let p = entry.path();
-        let mt = path_mtime(&p);
+        // One stat per entry, not two: `path_mtime` and `disk_usage` used to
+        // each call `symlink_metadata` independently, doubling syscalls on a
+        // walk that is already stat-bound.
+        let meta = p.symlink_metadata().ok();
+        let mt = meta.as_ref().and_then(util::mtime_from_meta);
         if older_than_days > 0 {
             let Some(mt) = mt else { continue };
             if !util::is_older_than(mt, older_than_days) {
@@ -215,7 +219,7 @@ fn measure(
                 files.push(p.clone());
             }
         }
-        bytes += disk_usage(&p);
+        bytes += meta.as_ref().map(util::disk_usage_from_meta).unwrap_or(0);
         if let Some(mt) = mt {
             oldest = Some(oldest.map_or(mt, |o| o.min(mt)));
             newest = Some(newest.map_or(mt, |n| n.max(mt)));

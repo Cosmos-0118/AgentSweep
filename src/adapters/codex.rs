@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{app_support, capture, fallback_home, process_running, Adapter};
+use super::{app_support, capture, capture_with_timeout, fallback_home, process_running, Adapter};
 
 static DOCTOR: OnceLock<Option<Value>> = OnceLock::new();
 static VERSION: OnceLock<Option<String>> = OnceLock::new();
@@ -56,18 +57,19 @@ impl Adapter for Codex {
     }
 
     fn is_running(&self) -> bool {
-        // Storage locations and version can be cached, but process state must
-        // be read live: the dashboard refreshes while it remains open.
-        if let Some(json) = doctor_json_fresh() {
-            if let Some(status) = json
-                .pointer("/checks/app_server.status/details/status")
-                .and_then(|v| v.as_str())
-            {
-                if status != "not running" && !status.is_empty() {
-                    return true;
-                }
-            }
-        }
+        // This used to shell out to `codex doctor --json` for the background
+        // app-server daemon's live status, since a daemon can run under a
+        // process name a plain process-list check wouldn't recognize. On a
+        // real machine that command measured 7-8s wall time, of which the
+        // app-server check itself accounted for 0ms - the rest is fixed CLI
+        // startup plus two unrelated network round-trips the doctor also
+        // runs. There is no timeout short enough to make that probe both
+        // fast and useful: anything under ~7s times out every single time,
+        // so it was paying its budget on every periodic refresh for a
+        // result that structurally never arrives. `process_running` matches
+        // on the full command line, not just the process name, so a daemon
+        // started as `codex app-server ...` is still caught by the "codex"
+        // token in its argv - drop the doctor probe and rely on that alone.
         process_running(&["codex"])
     }
 }
@@ -77,7 +79,11 @@ fn doctor_json() -> Option<Value> {
 }
 
 fn doctor_json_fresh() -> Option<Value> {
-    let stdout = capture("codex", &["doctor", "--json"])?;
+    doctor_json_with_timeout(Duration::from_secs(3))
+}
+
+fn doctor_json_with_timeout(timeout: Duration) -> Option<Value> {
+    let stdout = capture_with_timeout("codex", &["doctor", "--json"], timeout)?;
     let trimmed = stdout
         .lines()
         .skip_while(|line| !line.trim_start().starts_with('{'))

@@ -34,6 +34,11 @@ const LOGO: [&str; 3] = [
     "      understand · control · reclaim     ",
 ];
 const REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+// A full scan walks every watched root on disk; once the picture is stable,
+// re-walking on a fixed 15s clock forever is wasted CPU/disk work for as
+// long as the app sits open. Back off exponentially up to this cap and reset
+// to REFRESH_INTERVAL the moment a scan actually finds something changed.
+const MAX_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const FADE_DURATION: Duration = Duration::from_millis(650);
 
 #[derive(Clone)]
@@ -95,6 +100,7 @@ struct App {
     refresh_pending: bool,
     refresh_handle: Option<thread::JoinHandle<()>>,
     next_refresh: Instant,
+    refresh_interval: Duration,
     pending_clean: Option<Vec<Item>>,
     fade_started: Option<Instant>,
 }
@@ -143,6 +149,7 @@ impl App {
             refresh_pending: false,
             refresh_handle: None,
             next_refresh: Instant::now(),
+            refresh_interval: REFRESH_INTERVAL,
             pending_clean: None,
             fade_started: None,
         }
@@ -290,6 +297,20 @@ impl App {
             && matches!(self.overlay, Overlay::None)
             && !self.refresh_in_flight
             && (self.refresh_pending || now >= self.next_refresh)
+    }
+
+    /// How long to wait before the next periodic scan. `changed` covers a
+    /// scan that found different reclaimable bytes, a scan that failed or
+    /// crashed (worth retrying soon rather than waiting out a long backoff),
+    /// and a clean's reconciliation scan - even one that found the exact
+    /// pre-clean picture, since that's the "delete did not stick" case that
+    /// needs closer watching, not less.
+    fn next_refresh_interval(&self, changed: bool) -> Duration {
+        if changed {
+            REFRESH_INTERVAL
+        } else {
+            (self.refresh_interval * 2).min(MAX_REFRESH_INTERVAL)
+        }
     }
 
     fn fade_progress(&self) -> Option<f64> {
@@ -719,6 +740,71 @@ impl App {
         self.screen = Screen::Reconciling;
     }
 
+    /// Apply a scan result once a refresh is known not to be stale (a caller
+    /// checks `!refresh_pending` before calling this). Pulled out of the
+    /// event loop so the `Fading` guard below is covered by a unit test
+    /// instead of only by manually racing a background scan against a hold.
+    fn apply_refresh_result(&mut self, result: anyhow::Result<Inventory>) {
+        match result {
+            Ok(inv) => {
+                if self.status.starts_with("Refresh failed;") {
+                    self.status.clear();
+                }
+                // The move/quarantine itself can report success and still
+                // not stick (a rule matching more than one on-disk location
+                // for the same data is one concrete way that happens).
+                // Reconciling's whole job is to check reality rather than
+                // trust that report, so state the fact plainly instead of
+                // silently leaving the "Reclaimed" status next to a row that
+                // quietly came back - without guessing at a cause this
+                // can't actually verify.
+                let reconciling = matches!(self.screen, Screen::Reconciling);
+                if reconciling {
+                    let reappeared = self.reappeared_after_clean(&inv);
+                    if !reappeared.is_empty() {
+                        self.status = format!(
+                            "{} still present after cleanup - the delete did not stick.",
+                            reappeared.join(", ")
+                        );
+                    }
+                }
+                // A reconciliation scan that still matches the pre-clean
+                // picture is the "delete did not stick" case - exactly the
+                // one that needs closer watching, not a longer backoff.
+                let changed = reconciling || !inv.same_reclaimable_shape(&self.inventory);
+                self.refresh_interval = self.next_refresh_interval(changed);
+                self.apply_inventory(inv);
+                // A scan that was already in flight when the hold-confirm
+                // opened can land just after it confirms, while `Fading` is
+                // holding `pending_clean` for the clean that hasn't started
+                // yet. Clearing it here would silently drop that clean and
+                // leave `Fading` waiting forever with nothing left to run.
+                if !matches!(self.screen, Screen::Fading) {
+                    self.pending_clean = None;
+                }
+                if reconciling {
+                    self.screen = Screen::Dash;
+                }
+                self.scan_done = true;
+            }
+            Err(error) => {
+                // Do not hide data merely because a background scan hit a
+                // temporary error; the next interval will retry.
+                self.status = format!("Refresh failed; keeping last verified view: {error}");
+                self.refresh_interval = self.next_refresh_interval(true);
+                if !matches!(self.screen, Screen::Fading) {
+                    self.pending_clean = None;
+                }
+                if matches!(self.screen, Screen::Reconciling) {
+                    self.screen = Screen::Dash;
+                }
+                // The first scan must still leave the loading screen; an
+                // empty-but-explicitly-stale dashboard is recoverable.
+                self.scan_done = true;
+            }
+        }
+    }
+
     fn tick(&mut self, dt: f64, now: Instant) {
         if matches!(self.screen, Screen::Boot)
             && self.started.elapsed() > Duration::from_millis(700)
@@ -738,6 +824,13 @@ impl App {
         {
             if let Some(items) = self.pending_clean.clone() {
                 self.run_clean(items);
+            } else {
+                // Nothing to run the fade led up to (e.g. it was cleared out
+                // from under us) - land back on the dashboard instead of
+                // sitting on `Fading` forever with no way out but quitting.
+                self.fade_started = None;
+                self.screen = Screen::Dash;
+                self.status = "Cleanup did not start; nothing was deleted.".into();
             }
         }
         self.anim_total.tick(dt);
@@ -789,56 +882,12 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
                     redraw = true;
                     app.refresh_in_flight = false;
                     app.refresh_handle = None;
-                    app.next_refresh = Instant::now() + REFRESH_INTERVAL;
                     // A cleanup or manual refresh asked for newer data while this
                     // worker was running. Never briefly apply its stale snapshot.
                     if !app.refresh_pending {
-                        match result {
-                            Ok(inv) => {
-                                if app.status.starts_with("Refresh failed;") {
-                                    app.status.clear();
-                                }
-                                // The move/quarantine itself can report success
-                                // and still not stick (a rule matching more than
-                                // one on-disk location for the same data is one
-                                // concrete way that happens). Reconciling's whole
-                                // job is to check reality rather than trust that
-                                // report, so state the fact plainly instead of
-                                // silently leaving the "Reclaimed" status next to
-                                // a row that quietly came back - without guessing
-                                // at a cause this can't actually verify.
-                                if matches!(app.screen, Screen::Reconciling) {
-                                    let reappeared = app.reappeared_after_clean(&inv);
-                                    if !reappeared.is_empty() {
-                                        app.status = format!(
-                                            "{} still present after cleanup - the delete did not stick.",
-                                            reappeared.join(", ")
-                                        );
-                                    }
-                                }
-                                app.apply_inventory(inv);
-                                app.pending_clean = None;
-                                if matches!(app.screen, Screen::Reconciling) {
-                                    app.screen = Screen::Dash;
-                                }
-                                app.scan_done = true;
-                            }
-                            Err(error) => {
-                                // Do not hide data merely because a background scan hit a
-                                // temporary error; the next interval will retry.
-                                app.status = format!(
-                                    "Refresh failed; keeping last verified view: {error}"
-                                );
-                                app.pending_clean = None;
-                                if matches!(app.screen, Screen::Reconciling) {
-                                    app.screen = Screen::Dash;
-                                }
-                                // The first scan must still leave the loading screen; an
-                                // empty-but-explicitly-stale dashboard is recoverable.
-                                app.scan_done = true;
-                            }
-                        }
+                        app.apply_refresh_result(result);
                     }
+                    app.next_refresh = Instant::now() + app.refresh_interval;
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     // A worker that panics drops its Sender clone without ever
@@ -851,15 +900,18 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
                         redraw = true;
                         app.refresh_in_flight = false;
                         app.refresh_handle = None;
-                        app.next_refresh = Instant::now() + REFRESH_INTERVAL;
                         if !app.refresh_pending {
                             app.status = "Refresh failed; keeping last verified view: scan worker crashed.".into();
-                            app.pending_clean = None;
+                            app.refresh_interval = app.next_refresh_interval(true);
+                            if !matches!(app.screen, Screen::Fading) {
+                                app.pending_clean = None;
+                            }
                             if matches!(app.screen, Screen::Reconciling) {
                                 app.screen = Screen::Dash;
                             }
                             app.scan_done = true;
                         }
+                        app.next_refresh = Instant::now() + app.refresh_interval;
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {}
@@ -902,8 +954,21 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
             FRAME.saturating_sub(last.elapsed())
         };
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                app.handle_key(key);
+            // Holding a key (e.g. space through the delete hold-confirm)
+            // makes the terminal queue repeat events faster than a full
+            // redraw can keep up with; drawing once per event here let the
+            // backlog grow without bound, which is what made the UI look
+            // stuck until the key was released. Drain everything already
+            // queued and redraw once instead.
+            let mut drained = 0usize;
+            loop {
+                if let Event::Key(key) = event::read()? {
+                    app.handle_key(key);
+                }
+                drained += 1;
+                if drained >= 256 || !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
             terminal.draw(|f| draw(f, &app))?;
         }
@@ -1848,6 +1913,54 @@ mod dash_tests {
     }
 
     #[test]
+    fn a_scan_landing_during_the_pre_cleanup_fade_does_not_drop_the_clean() {
+        // Reproduces a real hang: a scan already in flight when the
+        // hold-confirm opened can land just after the hold confirms, while
+        // `Fading` is still holding `pending_clean` for a clean that has not
+        // started yet. `apply_refresh_result` used to null `pending_clean`
+        // unconditionally, so by the time the fade timer elapsed there was
+        // nothing left to run - `Fading` never advanced to `Cleaning` and
+        // just sat there, indistinguishable from a frozen UI, until the user
+        // gave up and pressed `q`.
+        let mut app = test_app();
+        let (clean_tx, _clean_rx) = mpsc::channel();
+        app.clean_tx = Some(clean_tx);
+        let items = app.selected_items();
+        app.begin_fade(items);
+        assert!(matches!(app.screen, Screen::Fading));
+
+        app.apply_refresh_result(Ok(app.inventory.clone()));
+
+        assert!(
+            app.pending_clean.is_some(),
+            "a scan landing mid-fade must not cancel the pending clean"
+        );
+        assert!(matches!(app.screen, Screen::Fading));
+
+        let now = Instant::now();
+        app.fade_started = Some(now - FADE_DURATION);
+        app.tick(0.0, now);
+
+        assert!(
+            matches!(app.screen, Screen::Cleaning),
+            "the fade must still hand off to the real clean once its timer elapses"
+        );
+    }
+
+    #[test]
+    fn fading_with_nothing_pending_lands_back_on_dash_instead_of_hanging() {
+        let mut app = test_app();
+        app.screen = Screen::Fading;
+        app.fade_started = Some(Instant::now() - FADE_DURATION);
+        app.pending_clean = None;
+
+        app.tick(0.0, Instant::now());
+
+        assert!(matches!(app.screen, Screen::Dash));
+        assert!(app.fade_started.is_none());
+    }
+
+    #[test]
     fn quit_is_refused_while_a_clean_is_actually_running() {
         // Once execute() has started moving/deleting files there is no safe
         // rollback point, so quitting here (unlike during the pre-clean fade)
@@ -1909,6 +2022,30 @@ mod dash_tests {
         let mut actually_gone = app.inventory.clone();
         actually_gone.tools[0].items.clear();
         assert!(app.reappeared_after_clean(&actually_gone).is_empty());
+    }
+
+    #[test]
+    fn refresh_backoff_doubles_when_unchanged_and_caps() {
+        let mut app = test_app();
+        assert_eq!(app.refresh_interval, REFRESH_INTERVAL);
+        app.refresh_interval = app.next_refresh_interval(false);
+        assert_eq!(app.refresh_interval, REFRESH_INTERVAL * 2);
+        app.refresh_interval = app.next_refresh_interval(false);
+        assert_eq!(app.refresh_interval, REFRESH_INTERVAL * 4);
+        for _ in 0..10 {
+            app.refresh_interval = app.next_refresh_interval(false);
+        }
+        assert_eq!(
+            app.refresh_interval, MAX_REFRESH_INTERVAL,
+            "backoff must not grow without bound"
+        );
+    }
+
+    #[test]
+    fn refresh_backoff_resets_on_any_change() {
+        let mut app = test_app();
+        app.refresh_interval = MAX_REFRESH_INTERVAL;
+        assert_eq!(app.next_refresh_interval(true), REFRESH_INTERVAL);
     }
 
     #[test]
