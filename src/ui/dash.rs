@@ -1640,7 +1640,7 @@ fn digital_fade(text: &str, progress: f64, row: usize) -> String {
             let signal = ((column * 37 + row * 17) % 101) as f64 / 100.0;
             if signal >= dissolve {
                 ch
-            } else if (column + row) % 3 == 0 {
+            } else if (column + row).is_multiple_of(3) {
                 '░'
             } else {
                 '·'
