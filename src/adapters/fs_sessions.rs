@@ -138,13 +138,7 @@ mod tests {
         drop(f);
 
         let mut items = vec![item("t.sessions")];
-        enrich_stale_children(
-            &mut items,
-            "t.sessions",
-            "Test",
-            "sessions",
-            &[dir.clone()],
-        );
+        enrich_stale_children(&mut items, "t.sessions", "Test", "sessions", &[dir.clone()]);
         assert_eq!(items[0].paths, vec![old]);
         assert!(items[0].bytes > 0);
         let _ = fs::remove_dir_all(dir);

@@ -11,9 +11,7 @@ use crate::util;
 pub fn run(delegate: &str, item: &Item, dry_run: bool) -> anyhow::Result<u64> {
     match delegate {
         "claude.project_purge" => claude_purge(item, dry_run),
-        "cursor.chat_session_delete" => {
-            composer_chat_sessions(item, dry_run, "cursor", "Cursor")
-        }
+        "cursor.chat_session_delete" => composer_chat_sessions(item, dry_run, "cursor", "Cursor"),
         "vscode.chat_session_delete" => vscode_chat_sessions(item, dry_run),
         "windsurf.chat_session_delete" => {
             composer_chat_sessions(item, dry_run, "windsurf", "Windsurf")
@@ -77,9 +75,10 @@ fn composer_chat_sessions(
     if dry_run {
         return Ok(bytes);
     }
-    let db = item.paths.first().ok_or_else(|| {
-        anyhow::anyhow!("{product} chat database path is missing")
-    })?;
+    let db = item
+        .paths
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("{product} chat database path is missing"))?;
     let ids = composer_chat::stale_session_ids(db)?;
     if ids.is_empty() {
         anyhow::bail!("{product} reports no deletable chats in its database");
@@ -104,9 +103,8 @@ fn vscode_chat_sessions(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
     if dry_run {
         return Ok(bytes);
     }
-    let app_root = vscode_app_root(item).ok_or_else(|| {
-        anyhow::anyhow!("VS Code app root could not be derived from chat paths")
-    })?;
+    let app_root = vscode_app_root(item)
+        .ok_or_else(|| anyhow::anyhow!("VS Code app root could not be derived from chat paths"))?;
     if adapters::by_id("vscode")
         .map(|a| a.is_running())
         .unwrap_or(false)

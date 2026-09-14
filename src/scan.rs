@@ -29,7 +29,7 @@ fn scan_tool(adapter: &dyn Adapter, rules: &[Rule]) -> ToolInventory {
     let mut items: Vec<Item> = rules
         .par_iter()
         .filter(|r| r.tool == adapter.id())
-        .map(|rule| scan_rule(rule, &roots))
+        .flat_map_iter(|rule| scan_rule_items(rule, &roots))
         .collect();
 
     // Unknown sweep is also independent per root: one thread per root.
@@ -118,6 +118,29 @@ fn scan_rule(rule: &Rule, roots: &BTreeMap<String, PathBuf>) -> Item {
     item.oldest_mtime = oldest;
     item.newest_mtime = newest;
     item
+}
+
+/// Unknown locations are informational, so presenting several unrelated
+/// directories as one item makes its total impossible to attribute to the
+/// path shown in the dashboard. Split them into exact locations. Other
+/// multi-path rules intentionally model one logical unit (such as a SQLite
+/// database plus its WAL/SHM siblings) and remain grouped.
+fn scan_rule_items(rule: &Rule, roots: &BTreeMap<String, PathBuf>) -> Vec<Item> {
+    if rule.risk != Risk::Unknown || rule.paths.len() <= 1 {
+        return vec![scan_rule(rule, roots)];
+    }
+
+    rule.paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let mut location_rule = rule.clone();
+            location_rule.id = format!("{}.{}", rule.id, index + 1);
+            location_rule.label = format!("{}: {path}", rule.label);
+            location_rule.paths = vec![path.clone()];
+            scan_rule(&location_rule, roots)
+        })
+        .collect()
 }
 
 fn resolve(root: &Path, pattern: &str) -> Vec<PathBuf> {
@@ -364,6 +387,47 @@ mod tests {
         let unk = unknown_entries("t", "home", &dir, &claimed, &roots);
         assert!(unk.iter().any(|i| i.label.contains("mystery")));
         assert!(unk.iter().all(|i| !i.label.contains("cache")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unknown_multi_location_rules_are_split_into_exact_items() {
+        let dir = std::env::temp_dir().join(format!("agentsweep-unknown-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("packages")).unwrap();
+        fs::create_dir_all(dir.join("agents")).unwrap();
+        fs::write(dir.join("packages/cache.bin"), vec![0u8; 8192]).unwrap();
+        fs::write(dir.join("agents/config.toml"), b"small").unwrap();
+
+        let rule = Rule {
+            id: "t.unknown".into(),
+            tool: "t".into(),
+            root: "home".into(),
+            label: "Unclassified test data".into(),
+            paths: vec!["packages".into(), "agents".into()],
+            risk: Risk::Unknown,
+            requires_stopped: false,
+            older_than_days: 0,
+            consequence: String::new(),
+            delegate: None,
+        };
+        let mut roots = BTreeMap::new();
+        roots.insert("home".into(), dir.clone());
+
+        let items = scan_rule_items(&rule, &roots);
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| item.paths.len() == 1));
+        let packages = items
+            .iter()
+            .find(|item| item.label.ends_with(": packages"))
+            .unwrap();
+        let agents = items
+            .iter()
+            .find(|item| item.label.ends_with(": agents"))
+            .unwrap();
+        assert_eq!(packages.paths, vec![dir.join("packages")]);
+        assert_eq!(agents.paths, vec![dir.join("agents")]);
+        assert!(packages.bytes > agents.bytes);
         let _ = fs::remove_dir_all(&dir);
     }
 }

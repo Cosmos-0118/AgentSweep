@@ -334,10 +334,7 @@ mod tests {
         let now = chrono::Utc::now().timestamp_millis();
         conn.execute(
             "INSERT INTO composerHeaders (composerId, lastUpdatedAt) VALUES (?1, ?2)",
-            (
-                "chat-old",
-                now - (SESSION_RETENTION_DAYS + 5) * 86_400_000,
-            ),
+            ("chat-old", now - (SESSION_RETENTION_DAYS + 5) * 86_400_000),
         )
         .unwrap();
         conn.execute(

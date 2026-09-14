@@ -6,8 +6,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -40,6 +40,9 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(15);
 // to REFRESH_INTERVAL the moment a scan actually finds something changed.
 const MAX_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const FADE_DURATION: Duration = Duration::from_millis(650);
+const MARQUEE_PAUSE: Duration = Duration::from_millis(1_200);
+const MARQUEE_STEP: Duration = Duration::from_millis(120);
+const MARQUEE_SEPARATOR: &[char] = &[' ', ' ', '─', '─', ' ', '↺', ' ', '─', '─', ' ', ' '];
 
 #[derive(Clone)]
 /// Top-level screens. Modal states (confirm, refused, help, restore,
@@ -103,6 +106,7 @@ struct App {
     refresh_interval: Duration,
     pending_clean: Option<Vec<Item>>,
     fade_started: Option<Instant>,
+    marquee_started: Instant,
 }
 
 struct Notice {
@@ -152,6 +156,7 @@ impl App {
             refresh_interval: REFRESH_INTERVAL,
             pending_clean: None,
             fade_started: None,
+            marquee_started: Instant::now(),
         }
     }
 
@@ -224,6 +229,14 @@ impl App {
                 .all(|b| (b.value() - b.target()).abs() < EPS)
             && self.shake == 0.0
             && !self.inventory.tools.iter().any(|tool| tool.running)
+    }
+
+    fn marquee_active(&self, terminal_width: usize) -> bool {
+        let items = self.current_items();
+        let description_width = item_description_width(&items, terminal_width.saturating_sub(2));
+        items
+            .get(self.selected_item)
+            .is_some_and(|item| item.consequence.chars().count() > description_width)
     }
 
     fn current_tool_id(&self) -> &str {
@@ -535,6 +548,7 @@ impl App {
         }
         let next = (self.selected_item as i32 + delta).rem_euclid(n) as usize;
         self.selected_item = next;
+        self.marquee_started = Instant::now();
     }
 
     fn move_tool(&mut self, delta: i32) {
@@ -544,6 +558,7 @@ impl App {
         }
         self.selected_tool = (self.selected_tool as i32 + delta).rem_euclid(n) as usize;
         self.selected_item = 0;
+        self.marquee_started = Instant::now();
     }
 
     fn toggle(&mut self) {
@@ -870,13 +885,21 @@ pub fn run() -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     // Belt and braces: no block cursor sitting in the middle of the dashboard.
     let _ = terminal.hide_cursor();
+    // Keep trackpad and mouse-wheel scrolling inside the alternate screen.
+    // Without mouse capture, terminals commonly switch their viewport to the
+    // primary buffer, exposing the shell's scrollback behind the dashboard.
+    let _ = execute!(stdout(), EnableMouseCapture);
     let result = run_app(&mut terminal);
+    let _ = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
 
 fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
     let mut app = App::new();
+    // Terminal size changes only on resize events, so retain it instead of
+    // querying the backend every marquee frame.
+    let mut terminal_width = terminal.size()?.width as usize;
     // Best-effort keyboard-enhancement for key-up/release detection.
     // Falls back to the 150ms key-repeat silence heuristic in hold.rs.
     let _ = execute!(
@@ -956,9 +979,13 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         }
         // Idle throttle: once animations settle on the dashboard with no
         // overlay open, stop redrawing at 60fps and wait for input instead.
+        let marquee = matches!(app.screen, Screen::Dash)
+            && matches!(app.overlay, Overlay::None)
+            && app.marquee_active(terminal_width);
         let idle = matches!(app.screen, Screen::Dash)
             && matches!(app.overlay, Overlay::None)
-            && app.anims_settled();
+            && app.anims_settled()
+            && !marquee;
         if !idle || redraw {
             terminal.draw(|f| draw(f, &app))?;
         }
@@ -967,6 +994,8 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         // cadence instead of blocking a whole frame on it.
         let timeout = if app.clean_running {
             Duration::from_millis(50)
+        } else if marquee {
+            MARQUEE_STEP
         } else if idle {
             Duration::from_millis(150)
         } else {
@@ -981,8 +1010,10 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
             // queued and redraw once instead.
             let mut drained = 0usize;
             loop {
-                if let Event::Key(key) = event::read()? {
-                    app.handle_key(key);
+                match event::read()? {
+                    Event::Key(key) => app.handle_key(key),
+                    Event::Resize(width, _) => terminal_width = width as usize,
+                    _ => {}
                 }
                 drained += 1;
                 if drained >= 256 || !event::poll(Duration::ZERO)? {
@@ -1613,10 +1644,15 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                 .first()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            let body = if path.is_empty() {
+            let location = match item.paths.len() {
+                0 => String::new(),
+                1 => path,
+                count => format!("{path}  + {} related locations", count - 1),
+            };
+            let body = if location.is_empty() {
                 trunc(&item.consequence, w)
             } else {
-                trunc(&format!("{}  —  {}", item.consequence, path), w)
+                trunc(&format!("{}  —  {location}", item.consequence), w)
             };
             (head, Line::from(Span::styled(body, theme::dim())))
         }
@@ -1685,6 +1721,8 @@ fn draw_items(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(theme::GREY));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let name_width = item_name_width(&items, inner.width as usize);
+    let description_width = item_description_width(&items, inner.width as usize);
     let shake_off = if app.shake > 0.0 {
         ((app.shake * 3.0).sin() * 2.0) as i16
     } else {
@@ -1717,12 +1755,20 @@ fn draw_items(frame: &mut Frame, app: &App, area: Rect) {
         if hl {
             style = style.add_modifier(Modifier::REVERSED);
         }
+        let description = if hl {
+            marquee(
+                &item.consequence,
+                description_width,
+                app.marquee_started.elapsed(),
+            )
+        } else {
+            trunc(&item.consequence, description_width)
+        };
         let line = format!(
-            "{glyph} {:<26} {:>10}  {:<10}  {}",
-            trunc(&item.label, 26),
+            "{glyph} {:<name_width$} {:>10}  {:<10}  {description}",
+            trunc(&item.label, name_width),
             util::bytes(item.bytes),
             item.risk.label(),
-            trunc(&item.consequence, inner.width.saturating_sub(52) as usize)
         );
         let line = fade
             .map(|progress| digital_fade(&line, progress, i))
@@ -1745,6 +1791,57 @@ fn draw_items(frame: &mut Frame, app: &App, area: Rect) {
             .style(Style::default().fg(theme::GREY));
         frame.render_stateful_widget(scrollbar, area, &mut sb_state);
     }
+}
+
+/// Give names enough room to identify the source while reserving at least
+/// half the row for the operational explanation. A fixed 26-column name
+/// column wasted wide terminals and obscured meaningful folder names.
+fn item_name_width(items: &[&Item], row_width: usize) -> usize {
+    let longest = items
+        .iter()
+        .map(|item| item.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let available = row_width.saturating_sub(27);
+    longest.min(available / 2).clamp(18, 52).min(available)
+}
+
+fn item_description_width(items: &[&Item], row_width: usize) -> usize {
+    row_width.saturating_sub(item_name_width(items, row_width) + 27)
+}
+
+/// Scroll an overflowing active description after a short reading pause. The
+/// inactive rows remain still, so the list stays easy to scan.
+fn marquee(text: &str, width: usize, elapsed: Duration) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let span = chars.len() + MARQUEE_SEPARATOR.len();
+    let pause_ms = MARQUEE_PAUSE.as_millis();
+    let scroll_ms = span as u128 * MARQUEE_STEP.as_millis();
+    let cycle_ms = pause_ms * 2 + scroll_ms;
+    let phase = elapsed.as_millis() % cycle_ms;
+    // Hold the readable beginning both before and after the scroll. The
+    // separator is visible only while travelling between the two copies.
+    let offset = if phase < pause_ms || phase >= pause_ms + scroll_ms {
+        0
+    } else {
+        ((phase - pause_ms) / MARQUEE_STEP.as_millis()) as usize
+    };
+    (0..width)
+        .map(|column| {
+            let source = (offset + column) % span;
+            if source < chars.len() {
+                chars[source]
+            } else {
+                MARQUEE_SEPARATOR[source - chars.len()]
+            }
+        })
+        .collect()
 }
 
 /// A deterministic dissolve reads as intentional rather than visual noise.
@@ -1904,6 +2001,40 @@ mod dash_tests {
         ] {
             assert!(text.contains(word), "footer shortcut shows {word}");
         }
+    }
+
+    #[test]
+    fn item_names_expand_on_wide_rows_without_starving_descriptions() {
+        let mut app = test_app();
+        app.inventory.tools[0].items[0].label = "x".repeat(60);
+        let items = app.current_items();
+        assert_eq!(item_name_width(&items, 220), 52);
+        assert_eq!(item_name_width(&items, 80), 26);
+    }
+
+    #[test]
+    fn marquee_pauses_then_moves_overflowing_text() {
+        let text = "A deliberately long description that needs to move";
+        assert_eq!(marquee(text, 12, Duration::ZERO), "A deliberate");
+        assert_ne!(
+            marquee(text, 12, MARQUEE_PAUSE + MARQUEE_STEP * 3),
+            "A deliberate"
+        );
+        assert!(marquee(
+            text,
+            12,
+            MARQUEE_PAUSE + MARQUEE_STEP * text.chars().count() as u32
+        )
+        .contains('↺'));
+
+        let full_scroll =
+            MARQUEE_STEP * (text.chars().count() as u32 + MARQUEE_SEPARATOR.len() as u32);
+        let restart = MARQUEE_PAUSE + full_scroll;
+        assert_eq!(marquee(text, 12, restart), "A deliberate");
+        assert_eq!(
+            marquee(text, 12, restart + MARQUEE_PAUSE - Duration::from_millis(1)),
+            "A deliberate"
+        );
     }
 
     #[test]

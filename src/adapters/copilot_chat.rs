@@ -132,10 +132,7 @@ fn finalize(
     newest: Option<SystemTime>,
 ) -> SessionStats {
     let count = ids.len();
-    let oldest_days = oldest
-        .map(util::age_days)
-        .map(|d| d as u32)
-        .unwrap_or(0);
+    let oldest_days = oldest.map(util::age_days).map(|d| d as u32).unwrap_or(0);
     SessionStats {
         count,
         oldest_days,
@@ -171,13 +168,11 @@ fn retention_cutoff() -> SystemTime {
 
 fn parse_updated_at(raw: &str) -> Option<SystemTime> {
     // Copilot stores UTC timestamps like 2026-08-05T21:59:49.123Z
-    let dt = chrono::DateTime::parse_from_rfc3339(raw)
-        .ok()
-        .or_else(|| {
-            chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.fZ")
-                .ok()
-                .map(|n| n.and_utc().fixed_offset())
-        })?;
+    let dt = chrono::DateTime::parse_from_rfc3339(raw).ok().or_else(|| {
+        chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.fZ")
+            .ok()
+            .map(|n| n.and_utc().fixed_offset())
+    })?;
     let secs = dt.timestamp();
     if secs < 0 {
         return None;
@@ -187,9 +182,8 @@ fn parse_updated_at(raw: &str) -> Option<SystemTime> {
 
 fn stale_sessions(conn: &Connection) -> anyhow::Result<Vec<(String, SystemTime)>> {
     let cutoff = retention_cutoff();
-    let mut stmt = conn.prepare(
-        "SELECT id, COALESCE(updated_at, created_at) FROM sessions ORDER BY updated_at",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT id, COALESCE(updated_at, created_at) FROM sessions ORDER BY updated_at")?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -233,7 +227,11 @@ fn estimate_db_bytes(conn: &Connection, sessions: &[(String, SystemTime)]) -> an
     Ok(total.max(1))
 }
 
-fn merge_time(oldest: &mut Option<SystemTime>, newest: &mut Option<SystemTime>, t: Option<SystemTime>) {
+fn merge_time(
+    oldest: &mut Option<SystemTime>,
+    newest: &mut Option<SystemTime>,
+    t: Option<SystemTime>,
+) {
     let Some(t) = t else { return };
     *oldest = Some(oldest.map_or(t, |o| o.min(t)));
     *newest = Some(newest.map_or(t, |n| n.max(t)));
@@ -315,12 +313,7 @@ pub fn delete_stale_sessions(app_root: &Path) -> anyhow::Result<u64> {
         }
         conn.execute_batch("BEGIN IMMEDIATE")?;
         for id in &ids {
-            for table in [
-                "turns",
-                "checkpoints",
-                "session_files",
-                "session_refs",
-            ] {
+            for table in ["turns", "checkpoints", "session_files", "session_refs"] {
                 let sql = format!("DELETE FROM {table} WHERE session_id = ?1");
                 let _ = conn.execute(&sql, [id]);
             }
