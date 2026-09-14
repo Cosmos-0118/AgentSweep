@@ -275,6 +275,53 @@ delegate = "claude.project_purge"
 consequence = "Deletes project chat transcripts via Claude's own purge command. You cannot resume those chats."
 
 [[rule]]
+id = "claude.memory"
+tool = "claude"
+root = "home"
+label = "Auto-memory"
+paths = ["memory"]
+risk = "critical"
+consequence = "Claude's persistent cross-conversation auto-memory. Never deleted."
+
+[[rule]]
+id = "claude.jobs"
+tool = "claude"
+root = "home"
+label = "Background-agent job state"
+paths = ["jobs"]
+risk = "critical"
+consequence = "Background-agent job state used by Agent View. Deleting can break Claude's knowledge of running or resumable jobs. Never deleted."
+
+[[rule]]
+id = "claude.daemon"
+tool = "claude"
+root = "home"
+label = "Background-agent daemon state"
+paths = ["daemon"]
+risk = "critical"
+consequence = "The background-agent supervisor roster and bridge key. Deleting can sever reconnection to live background agents. Never deleted."
+
+[[rule]]
+id = "claude.telemetry"
+tool = "claude"
+root = "home"
+label = "Telemetry buffer"
+paths = ["telemetry"]
+risk = "safe"
+requires_stopped = true
+consequence = "Deletes buffered operational telemetry events. Not conversation data; regenerated as Claude runs."
+
+[[rule]]
+id = "claude.cache"
+tool = "claude"
+root = "home"
+label = "Generated cache"
+paths = ["cache"]
+risk = "safe"
+requires_stopped = true
+consequence = "Deletes Claude-generated cache files. Regenerated automatically."
+
+[[rule]]
 id = "claude.dotfile"
 tool = "claude"
 root = "dotfile"
@@ -297,7 +344,7 @@ id = "claude.unknown.extra"
 tool = "claude"
 root = "home"
 label = "Unclassified Claude data"
-paths = ["daemon", "jobs", "memory", "telemetry", "downloads", "cache", "sessions"]
+paths = ["downloads", "sessions"]
 risk = "unknown"
 consequence = "Not in the published Claude storage map. Shown for size only. Never deleted."
 
@@ -496,38 +543,154 @@ id = "claude.desktop.cache"
 tool = "claude"
 root = "desktop"
 label = "Desktop app caches"
-paths = ["Cache", "Code Cache", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache"]
+paths = ["Cache", "Code Cache", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm"]
 risk = "safe"
 requires_stopped = true
 consequence = "Standard Chromium render/compile caches used by the Claude desktop app. Regenerated automatically."
+
+[[rule]]
+id = "claude.desktop.crashpad"
+tool = "claude"
+root = "desktop"
+label = "Crash-report state"
+paths = ["Crashpad"]
+risk = "review"
+requires_stopped = true
+consequence = "Chromium/Electron crash-handler state. Can contain crash dumps not yet uploaded/processed. Quarantined, not hard-deleted, so it can be recovered."
 
 [[rule]]
 id = "claude.desktop.webdata"
 tool = "claude"
 root = "desktop"
 label = "Desktop webview storage"
-paths = ["IndexedDB", "Local Storage", "Session Storage", "Partitions"]
+paths = ["IndexedDB", "Local Storage", "Session Storage", "Partitions", "WebStorage", "Cookies", "Cookies-journal"]
 risk = "review"
 requires_stopped = true
-consequence = "Webview storage for the desktop app UI. May include sign-in/session state; you may need to re-authenticate."
+consequence = "Webview storage for the desktop app UI, including cookies. May include sign-in/session state; you may need to re-authenticate."
 
 [[rule]]
 id = "claude.desktop.vm_bundles"
 tool = "claude"
 root = "desktop"
-label = "Sandbox VM images"
+label = "Cowork sandbox VM image"
 paths = ["vm_bundles"]
-risk = "unknown"
-consequence = "Sandbox VM images for Claude's code execution feature. Not documented by Anthropic as safe to delete. Shown for size only."
+risk = "userdata"
+requires_stopped = true
+consequence = "Not personal data: this is Claude's local Cowork sandbox VM disk image (often several GB). Deleting it while Claude Desktop is fully quit is a documented repair/cleanup step; Claude re-provisions the VM the next time Cowork is used, which can require downloading/rebuilding several gigabytes and means Cowork is unavailable until that finishes. Gated behind Deep Clean because of that cost, not because it is private."
 
 [[rule]]
-id = "claude.desktop.unknown"
+id = "claude.desktop.claude_code_vm"
 tool = "claude"
 root = "desktop"
-label = "Unclassified desktop runtime data"
-paths = ["claude-code-vm", "claude-code", "claude-code-sessions", "local-agent-mode-sessions"]
+label = "Cowork Claude runtime"
+paths = ["claude-code-vm"]
+risk = "review"
+requires_stopped = true
+consequence = "The downloadable Claude runtime used inside the Cowork VM. Re-downloaded automatically if missing; Cowork needs network access before it can run again."
+
+[[rule]]
+id = "claude.desktop.claude_code"
+tool = "claude"
+root = "desktop"
+label = "Code-mode Claude runtime"
+paths = ["claude-code"]
+risk = "review"
+requires_stopped = true
+consequence = "The local Claude Code binary Desktop launches Code-mode sessions from. Re-downloaded automatically if missing."
+
+[[rule]]
+id = "claude.desktop.sessions"
+tool = "claude"
+root = "desktop"
+label = "Code-mode session registry"
+paths = ["claude-code-sessions"]
+risk = "critical"
+consequence = "Desktop's registry of Code-mode sessions (sidebar entries). The full transcripts live separately under ~/.claude/projects; deleting only the registry can orphan transcripts without a way to reopen them from Desktop. Never deleted."
+
+[[rule]]
+id = "claude.desktop.legacy_sessions"
+tool = "claude"
+root = "desktop"
+label = "Legacy Code-mode session data"
+paths = ["local-agent-mode-sessions"]
 risk = "unknown"
-consequence = "Not in the published Claude storage map. Shown for size only. Never deleted."
+consequence = "Older, since-migrated Code/Cowork session storage. Known migration bugs have left the only surviving copy of some session data here even after claude-code-sessions was created, and it can also hold an active skills-plugin checkout (skills-plugin/.../skills). Not in the published Claude storage map; needs cross-referencing before any entry can be called stale. Never deleted."
+
+[[rule]]
+id = "claude.desktop.identity"
+tool = "claude"
+root = "desktop"
+label = "Device identity"
+paths = ["ant-did", "ant-device-registry.json"]
+risk = "critical"
+consequence = "Claude Desktop's persistent device identity and trusted-device registration. Deleting can orphan sessions linked to this device and cannot be undone by reinstalling. Never deleted."
+
+[[rule]]
+id = "claude.desktop.config"
+tool = "claude"
+root = "desktop"
+label = "Desktop configuration"
+paths = ["claude_desktop_config.json", "config.json", "git-worktrees.json"]
+risk = "critical"
+consequence = "MCP server configuration, Code-mode workspace-trust state and Claude-created Git worktree registry. Never deleted."
+
+[[rule]]
+id = "claude.desktop.local_state"
+tool = "claude"
+root = "desktop"
+label = "Desktop browser engine state"
+paths = ["Local State"]
+risk = "critical"
+consequence = "Chromium installation-wide preferences and runtime metadata. Reset only as targeted troubleshooting; never auto-deleted."
+
+[[rule]]
+id = "claude.desktop.preferences"
+tool = "claude"
+root = "desktop"
+label = "Reset embedded browser profile preferences"
+paths = ["Preferences"]
+risk = "review"
+requires_stopped = true
+consequence = "Resets the embedded Chromium profile's preferences. Not routine cleanup."
+
+[[rule]]
+id = "claude.desktop.bridge_state"
+tool = "claude"
+root = "desktop"
+label = "Device-bridge and Cowork feature state"
+paths = ["buddy-tokens.json", "cowork-enabled-cli-ops.json"]
+risk = "review"
+requires_stopped = true
+consequence = "Device-bridge tokens and Cowork/CLI-ops enablement state. Recreated automatically, but deleting can force token re-issuance and temporarily reset Cowork integration."
+
+[[rule]]
+id = "claude.desktop.sentry"
+tool = "claude"
+root = "desktop"
+label = "Diagnostic report state"
+paths = ["sentry"]
+risk = "unknown"
+consequence = "May contain queued crash or diagnostic reports. Inspect its contents before any manual cleanup."
+
+[[rule]]
+id = "claude.desktop.usage_history"
+tool = "claude"
+root = "desktop"
+label = "Local plan-usage history"
+paths = ["plan-usage-history.json"]
+risk = "safe"
+requires_stopped = true
+consequence = "Deletes locally cached historical plan-usage samples/charts. Account usage and limits are tracked server-side and are unaffected."
+
+[[rule]]
+id = "claude.desktop.regenerable"
+tool = "claude"
+root = "desktop"
+label = "Regenerable desktop state"
+paths = ["ca-bundle.pem", "window-state.json", "vm-support-probe.json", "extensions-blocklist.json"]
+risk = "safe"
+requires_stopped = true
+consequence = "Generated CA bundle, window geometry, Cowork VM compatibility probe and extension blocklist cache. All recreated automatically."
 
 [[rule]]
 id = "vscode.cli.extensions"

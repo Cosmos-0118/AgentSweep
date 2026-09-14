@@ -14,6 +14,7 @@ dependencies = [
  "humansize",
  "indicatif",
  "jwalk",
+ "libc",
  "ratatui",
  "rayon",
  "rusqlite",

@@ -63,6 +63,7 @@ enum Overlay {
     Refused,
     Notice,
     Help,
+    Details,
     Restore,
     Optimize,
 }
@@ -84,6 +85,8 @@ struct App {
     anim_bars: [Animated; 5],
     shake: f64,
     refused: Option<Item>,
+    detail: Option<Item>,
+    detail_path_scroll: usize,
     notice: Option<Notice>,
     restore: Vec<Manifest>,
     restore_idx: usize,
@@ -135,6 +138,8 @@ impl App {
             anim_bars: std::array::from_fn(|_| Animated::new(0.0)),
             shake: 0.0,
             refused: None,
+            detail: None,
+            detail_path_scroll: 0,
             notice: None,
             restore: vec![],
             restore_idx: 0,
@@ -367,6 +372,22 @@ impl App {
                 self.overlay = Overlay::None;
                 return;
             }
+            Overlay::Details => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => {
+                        self.overlay = Overlay::None;
+                        self.detail = None;
+                    }
+                    KeyCode::Up => {
+                        self.detail_path_scroll = self.detail_path_scroll.saturating_sub(1)
+                    }
+                    KeyCode::Down => {
+                        self.detail_path_scroll = self.detail_path_scroll.saturating_add(1)
+                    }
+                    _ => {}
+                }
+                return;
+            }
             Overlay::Restore => {
                 self.handle_restore_key(key);
                 return;
@@ -410,6 +431,7 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('?') => self.overlay = Overlay::Help,
+            KeyCode::Char('i') => self.open_current_details(),
             KeyCode::Up => self.move_item(-1),
             KeyCode::Down => self.move_item(1),
             KeyCode::Left => self.move_tool(-1),
@@ -595,7 +617,11 @@ impl App {
     /// dashboard only ever passes a `PathBuf` as an argument, never through a
     /// shell, so unusual filenames stay safe.
     fn open_current_item(&mut self) {
-        let Some(item) = self.current_items().get(self.selected_item).cloned() else {
+        let Some(item) = self
+            .current_items()
+            .get(self.selected_item)
+            .map(|item| (*item).clone())
+        else {
             self.status = "Nothing to open.".into();
             return;
         };
@@ -638,6 +664,20 @@ impl App {
                 theme::RED,
             ),
         }
+    }
+
+    fn open_current_details(&mut self) {
+        let Some(item) = self
+            .current_items()
+            .get(self.selected_item)
+            .map(|item| (*item).clone())
+        else {
+            self.status = "Nothing to inspect.".into();
+            return;
+        };
+        self.detail = Some(item);
+        self.detail_path_scroll = 0;
+        self.overlay = Overlay::Details;
     }
 
     fn show_notice(
@@ -1095,6 +1135,11 @@ fn draw(frame: &mut Frame, app: &App) {
             }
         }
         Overlay::Help => modal::help_overlay(frame),
+        Overlay::Details => {
+            if let Some(item) = &app.detail {
+                modal::item_details(frame, item, app.detail_path_scroll);
+            }
+        }
         Overlay::Restore => {
             let opts: Vec<String> = if app.restore.is_empty() {
                 vec!["No quarantined snapshots".into()]
@@ -2011,6 +2056,29 @@ mod dash_tests {
             "toggle", "select", "clean", "restore", "optimize", "help", "quit",
         ] {
             assert!(text.contains(word), "footer shortcut shows {word}");
+        }
+    }
+
+    #[test]
+    fn inspect_key_opens_a_category_panel_with_paths_and_cleanup_contract() {
+        let mut app = test_app();
+        app.handle_key(KeyEvent::new(
+            KeyCode::Char('i'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(matches!(app.overlay, Overlay::Details));
+        let text = rendered(&app, 120, 30);
+        for expected in [
+            "CATEGORY INSPECTOR",
+            "Old plan files",
+            "WHAT THIS DOES",
+            "Deletes old plan-mode files.",
+            "PATHS (1)",
+            "/tmp/plans",
+            "permanent cleanup",
+        ] {
+            assert!(text.contains(expected), "inspector shows {expected}");
         }
     }
 

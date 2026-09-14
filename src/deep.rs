@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::time::Duration;
 
@@ -47,6 +48,10 @@ fn codex_standalone_prune(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
     let home = adapters::by_id("codex")
         .and_then(|adapter| adapter.roots().get("home").cloned())
         .ok_or_else(|| anyhow::anyhow!("Codex home is unavailable"))?;
+    // Codex's updater and this cleanup must serialize on the same lock. Do
+    // not fall back to an unlocked prune: `current` could otherwise change
+    // after validation and turn a selected old release into the active one.
+    let _install_lock = codex_install_lock(&home)?;
     let mut removed = 0;
     for path in &item.paths {
         if adapters::by_id("codex")
@@ -66,6 +71,35 @@ fn codex_standalone_prune(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
         remove_path(path)?;
     }
     Ok(removed)
+}
+
+#[cfg(unix)]
+fn codex_install_lock(home: &Path) -> anyhow::Result<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+
+    let path = home.join("packages/standalone/install.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "cannot acquire Codex updater lock at {}: {error}",
+                path.display()
+            )
+        })?;
+    // Non-blocking acquisition ensures cleanup never waits on an update that
+    // is already in progress. The File keeps the advisory lock until return.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result != 0 {
+        anyhow::bail!("Codex update is in progress; refusing to prune releases");
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn codex_install_lock(_home: &Path) -> anyhow::Result<std::fs::File> {
+    anyhow::bail!("standalone release pruning requires the Codex updater lock on this platform")
 }
 
 fn claude_purge(item: &Item, dry_run: bool) -> anyhow::Result<u64> {

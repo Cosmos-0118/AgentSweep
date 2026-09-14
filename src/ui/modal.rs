@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::model::Item;
+use crate::model::{Item, Risk};
 use crate::ui::theme;
 use crate::util;
 
@@ -23,6 +23,184 @@ fn opaque_surface(frame: &mut Frame, area: Rect) {
     // painting the opaque layer so panels never show dashboard text beneath.
     frame.render_widget(Clear, area);
     frame.render_widget(Block::default().style(theme::canvas()), area);
+}
+
+/// Full, scrollable category inspector. The dashboard's detail strip is a
+/// useful summary; this panel deliberately exposes the exact paths and the
+/// cleanup contract before the user opens or selects anything.
+pub fn item_details(frame: &mut Frame, item: &Item, path_scroll: usize) {
+    let viewport = frame.area();
+    let area = centered(
+        viewport,
+        viewport.width.saturating_sub(6).clamp(66, 104),
+        viewport.height.saturating_sub(3).clamp(16, 30),
+    );
+    opaque_surface(frame, area);
+    let border = theme::risk_color(item.risk);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .title(" ◈  CATEGORY INSPECTOR ")
+        .title_style(Style::default().fg(border).add_modifier(Modifier::BOLD))
+        .title_bottom(
+            Line::from(vec![
+                Span::styled(" ↑↓ ", theme::keycap()),
+                Span::styled(" paths ", theme::dim()),
+                Span::styled(" i esc ", theme::keycap()),
+                Span::styled(" close ", theme::dim()),
+            ])
+            .right_aligned(),
+        )
+        .padding(Padding::new(2, 2, 1, 0));
+    frame.render_widget(block, area);
+
+    let inner = Rect::new(
+        area.x + 3,
+        area.y + 2,
+        area.width.saturating_sub(6),
+        area.height.saturating_sub(4),
+    );
+    let width = inner.width.max(12) as usize;
+    let mut header = vec![
+        Line::from(Span::styled(
+            item.label.clone(),
+            theme::fg().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled(
+                format!("{}  ", item.risk.label()),
+                Style::default().fg(border).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}  ·  {}", util::bytes(item.bytes), cleanup_behavior(item)),
+                theme::fg(),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!("Rule: {}", item.rule_id),
+            theme::dim(),
+        )),
+    ];
+    if item.requires_stopped {
+        header.push(Line::from(Span::styled(
+            "Requires Codex to be fully closed before cleanup.",
+            Style::default().fg(theme::ORANGE),
+        )));
+    }
+    header.push(Line::from(""));
+    header.push(Line::from(Span::styled(
+        "WHAT THIS DOES",
+        theme::accent().add_modifier(Modifier::BOLD),
+    )));
+    header.extend(wrapped_lines(&item.consequence, width));
+    header.push(Line::from(""));
+    header.push(Line::from(Span::styled(
+        format!("PATHS ({})", item.paths.len()),
+        theme::accent().add_modifier(Modifier::BOLD),
+    )));
+
+    let header_height = header.len() as u16;
+    let body_y = inner.y.saturating_add(header_height);
+    let body_height = inner.height.saturating_sub(header_height);
+    frame.render_widget(
+        Paragraph::new(header),
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            header_height.min(inner.height),
+        ),
+    );
+
+    let mut paths = Vec::new();
+    for path in &item.paths {
+        let text = path.display().to_string();
+        let wrapped = wrap_text(&text, width.saturating_sub(3));
+        for (index, line) in wrapped.into_iter().enumerate() {
+            let prefix = if index == 0 { " • " } else { "   " };
+            paths.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(border)),
+                Span::styled(
+                    line,
+                    if index == 0 {
+                        theme::fg()
+                    } else {
+                        theme::dim()
+                    },
+                ),
+            ]));
+        }
+    }
+    if paths.is_empty() {
+        paths.push(Line::from(Span::styled(
+            "No filesystem path is available for this category.",
+            theme::dim(),
+        )));
+    }
+    let max_scroll = paths.len().saturating_sub(body_height as usize);
+    let start = path_scroll.min(max_scroll);
+    let shown: Vec<Line> = paths
+        .into_iter()
+        .skip(start)
+        .take(body_height as usize)
+        .collect();
+    frame.render_widget(
+        Paragraph::new(shown),
+        Rect::new(inner.x, body_y, inner.width, body_height),
+    );
+}
+
+fn cleanup_behavior(item: &Item) -> &'static str {
+    if item.delegate.is_some() {
+        return "permanent managed prune";
+    }
+    match item.risk {
+        Risk::Safe => "permanent cleanup",
+        Risk::Review => "quarantined for 7 days",
+        Risk::Userdata => "DEEP mode · quarantined for 7 days",
+        Risk::Critical => "protected · never deleted",
+        Risk::Unknown => "unclassified · never deleted",
+    }
+}
+
+fn wrapped_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    wrap_text(text, width)
+        .into_iter()
+        .map(|line| Line::from(Span::styled(line, theme::fg())))
+        .collect()
+}
+
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let sep = usize::from(!current.is_empty());
+        if !current.is_empty() && current.chars().count() + sep + word.chars().count() > width {
+            out.push(current);
+            current = String::new();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        // Paths and rule IDs may contain no whitespace. Split those chunks
+        // rather than letting one long string bleed through the border.
+        if current.is_empty() && word.chars().count() > width {
+            let chars: Vec<char> = word.chars().collect();
+            for chunk in chars.chunks(width) {
+                out.push(chunk.iter().collect());
+            }
+            continue;
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 pub fn confirm_modal(frame: &mut Frame, items: &[Item], progress: f64, userdata: bool) {
@@ -281,6 +459,7 @@ pub fn help_overlay(frame: &mut Frame) {
     left.extend(spaced_help_rows(vec![
         compact_help_row("space", vec![Span::styled("toggle item", theme::fg())]),
         compact_help_row("enter", vec![Span::styled("show in Finder", theme::fg())]),
+        compact_help_row("i", vec![Span::styled("inspect category", theme::fg())]),
         compact_help_row(
             "a",
             vec![Span::styled("select / deselect allowed", theme::fg())],
