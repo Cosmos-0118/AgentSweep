@@ -1,6 +1,6 @@
 [package]
 name = "agentsweep"
-version = "9.9.9"
+version = "0.1.0"
 edition = "2021"
 description = "Understand and control what your coding agents store locally"
 license = "MIT"
