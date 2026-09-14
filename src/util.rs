@@ -47,6 +47,31 @@ pub fn disk_usage(path: &Path) -> u64 {
     }
 }
 
+/// Allocated disk space for a path and everything below it.  `disk_usage` is
+/// deliberately a cheap, single-path stat; callers presenting a directory as
+/// reclaimable (or reporting space actually reclaimed after removing one)
+/// need this recursive form instead.  Keeping the two operations explicit
+/// avoids accidentally turning every metadata check into a directory walk.
+pub fn disk_usage_recursive(path: &Path) -> u64 {
+    // Inspect the link itself. `Path::is_dir` follows a directory symlink,
+    // which would both misreport its size and escape the intended cleanup
+    // tree during a recursive walk.
+    let Ok(meta) = path.symlink_metadata() else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return disk_usage_from_meta(&meta);
+    }
+    jwalk::WalkDir::new(path)
+        .skip_hidden(false)
+        .follow_links(false)
+        .parallelism(jwalk::Parallelism::Serial)
+        .into_iter()
+        .flatten()
+        .map(|entry| disk_usage(&entry.path()))
+        .sum()
+}
+
 pub fn path_mtime(path: &Path) -> Option<SystemTime> {
     path.symlink_metadata().ok().and_then(|m| m.modified().ok())
 }

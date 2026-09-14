@@ -105,6 +105,7 @@ struct App {
     next_refresh: Instant,
     refresh_interval: Duration,
     pending_clean: Option<Vec<Item>>,
+    skipped_clean_rules: HashSet<String>,
     fade_started: Option<Instant>,
     marquee_started: Instant,
 }
@@ -155,6 +156,7 @@ impl App {
             next_refresh: Instant::now(),
             refresh_interval: REFRESH_INTERVAL,
             pending_clean: None,
+            skipped_clean_rules: HashSet::new(),
             fade_started: None,
             marquee_started: Instant::now(),
         }
@@ -263,11 +265,12 @@ impl App {
         items
             .iter()
             .filter(|pending| {
-                inventory
-                    .tools
-                    .iter()
-                    .flat_map(|t| t.items.iter())
-                    .any(|fresh| fresh.rule_id == pending.rule_id && fresh.bytes > 0)
+                !self.skipped_clean_rules.contains(&pending.rule_id)
+                    && inventory
+                        .tools
+                        .iter()
+                        .flat_map(|t| t.items.iter())
+                        .any(|fresh| fresh.rule_id == pending.rule_id && fresh.bytes > 0)
             })
             .map(|item| item.label.clone())
             .collect()
@@ -719,6 +722,7 @@ impl App {
         self.clean_progress = 0.0;
         self.clean_started = Some(Instant::now());
         self.clean_label = items.first().map(|i| i.label.clone()).unwrap_or_default();
+        self.skipped_clean_rules.clear();
         // A scan already in flight (or one the periodic timer fires next) must
         // never land mid-clean and be applied over paths that are actively
         // being moved or deleted; the existing "pending refresh" discard path
@@ -751,15 +755,20 @@ impl App {
         self.clean_handle = None;
         match result {
             Ok(report) => {
+                self.skipped_clean_rules = report.skipped_rule_ids.iter().cloned().collect();
                 self.status = if report.skipped.is_empty() {
                     format!("Reclaimed {}.", util::bytes(report.bytes))
                 } else {
                     format!(
-                        "Cleanup incomplete: {}. Refreshing actual state.",
+                        "Reclaimed {}; skipped {}. Refreshing actual state.",
+                        util::bytes(report.bytes),
                         report.skipped.join("; ")
                     )
                 };
-                self.selected.clear();
+                // Keep the selection through reconciliation. Rows actually
+                // cleaned disappear from the fresh inventory automatically;
+                // rows skipped because their tool is running remain selected
+                // so the user can retry them after closing that tool.
             }
             Err(e) => {
                 self.status = format!("Clean failed: {e}");
@@ -813,6 +822,7 @@ impl App {
                 // leave `Fading` waiting forever with nothing left to run.
                 if !matches!(self.screen, Screen::Fading) {
                     self.pending_clean = None;
+                    self.skipped_clean_rules.clear();
                 }
                 if reconciling {
                     self.screen = Screen::Dash;
@@ -826,6 +836,7 @@ impl App {
                 self.refresh_interval = self.next_refresh_interval(true);
                 if !matches!(self.screen, Screen::Fading) {
                     self.pending_clean = None;
+                    self.skipped_clean_rules.clear();
                 }
                 if matches!(self.screen, Screen::Reconciling) {
                     self.screen = Screen::Dash;
@@ -2326,6 +2337,12 @@ mod dash_tests {
             app.reappeared_after_clean(&still_present),
             vec!["Old plan files".to_string()]
         );
+
+        // A running tool safety skip is intentional, not a cleanup that
+        // claimed success and then reappeared.
+        app.skipped_clean_rules.insert("claude.plans".into());
+        assert!(app.reappeared_after_clean(&still_present).is_empty());
+        app.skipped_clean_rules.clear();
 
         let mut actually_gone = app.inventory.clone();
         actually_gone.tools[0].items.clear();

@@ -94,6 +94,16 @@ fn scan_rule(rule: &Rule, roots: &BTreeMap<String, PathBuf>) -> Item {
     }
     matched.sort();
     matched.dedup();
+    // A glob can match both a directory and entries below it (for example
+    // `logs/**`). Measuring each match recursively would count the same
+    // files once for every matching ancestor, and would make cleanup try to
+    // remove children after their parent. Keep only the outermost matches.
+    let all_matches = matched.clone();
+    matched.retain(|candidate| {
+        !all_matches
+            .iter()
+            .any(|other| other != candidate && candidate.starts_with(other))
+    });
 
     let mut bytes = 0u64;
     let mut oldest: Option<SystemTime> = None;
@@ -428,6 +438,37 @@ mod tests {
         assert_eq!(packages.paths, vec![dir.join("packages")]);
         assert_eq!(agents.paths, vec![dir.join("agents")]);
         assert!(packages.bytes > agents.bytes);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn globbed_parent_and_children_are_measured_once() {
+        let dir = std::env::temp_dir().join(format!("agentsweep-glob-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("logs/nested")).unwrap();
+        fs::write(dir.join("logs/nested/output.log"), vec![0u8; 8192]).unwrap();
+
+        let rule = Rule {
+            id: "t.logs".into(),
+            tool: "t".into(),
+            root: "home".into(),
+            label: "logs".into(),
+            paths: vec!["logs/**".into()],
+            risk: Risk::Safe,
+            requires_stopped: false,
+            older_than_days: 0,
+            consequence: String::new(),
+            delegate: None,
+        };
+        let mut roots = BTreeMap::new();
+        roots.insert("home".into(), dir.clone());
+        let item = scan_rule(&rule, &roots);
+
+        assert_eq!(item.paths, vec![dir.join("logs/nested")]);
+        assert_eq!(
+            item.bytes,
+            util::disk_usage_recursive(&dir.join("logs/nested"))
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

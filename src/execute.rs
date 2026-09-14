@@ -32,14 +32,28 @@ pub struct ExecReport {
     pub deleted: Vec<PathBuf>,
     pub quarantined: Vec<PathBuf>,
     pub skipped: Vec<String>,
+    /// Rule IDs skipped before their cleanup action began. This lets the
+    /// dashboard distinguish a deliberate safety skip from a delete that
+    /// reported success but later reappeared.
+    pub skipped_rule_ids: Vec<String>,
     pub bytes: u64,
 }
 
 pub fn execute(plan: &CleanPlan) -> anyhow::Result<ExecReport> {
+    let blockers = safety::running_blockers(plan.items());
+    execute_with_blockers(plan, &blockers)
+}
+
+/// Execute every item that is safe to touch at the point the cleanup starts.
+/// A stopped-tool requirement is deliberately per item rather than a
+/// transaction-wide lock: a running Codex must not prevent an unrelated,
+/// safe Cursor cache from being cleaned in the same selection.
+fn execute_with_blockers(plan: &CleanPlan, blockers: &[String]) -> anyhow::Result<ExecReport> {
     if plan.items().iter().any(|i| i.risk.locked()) {
         panic!("CleanPlan invariant violated: locked item leaked into execute");
     }
-    safety::assert_stopped(plan.items())?;
+    let is_blocked =
+        |item: &Item| item.requires_stopped && blockers.iter().any(|tool| tool == &item.tool);
 
     let mut report = ExecReport {
         dry_run: plan.dry_run,
@@ -47,12 +61,18 @@ pub fn execute(plan: &CleanPlan) -> anyhow::Result<ExecReport> {
         deleted: vec![],
         quarantined: vec![],
         skipped: vec![],
+        skipped_rule_ids: vec![],
         bytes: 0,
     };
 
     if plan.dry_run {
-        report.bytes = plan.total_bytes();
         for item in plan.items() {
+            if is_blocked(item) {
+                report.skipped.push(running_skip(item));
+                report.skipped_rule_ids.push(item.rule_id.clone());
+                continue;
+            }
+            report.bytes = report.bytes.saturating_add(item.bytes);
             for p in &item.paths {
                 match item.risk {
                     Risk::Safe => report.deleted.push(p.clone()),
@@ -74,10 +94,9 @@ pub fn execute(plan: &CleanPlan) -> anyhow::Result<ExecReport> {
     // item is processed. A crash, kill, or power loss partway through must
     // still leave a manifest that accounts for whatever was already moved -
     // that's the only thing that makes "recoverable from quarantine" true.
-    let will_quarantine = plan
-        .items()
-        .iter()
-        .any(|i| i.delegate.is_none() && matches!(i.risk, Risk::Review | Risk::Userdata));
+    let will_quarantine = plan.items().iter().any(|i| {
+        !is_blocked(i) && i.delegate.is_none() && matches!(i.risk, Risk::Review | Risk::Userdata)
+    });
     if will_quarantine {
         fs::create_dir_all(&qroot)?;
         write_manifest(&qroot, &manifest)?;
@@ -85,17 +104,25 @@ pub fn execute(plan: &CleanPlan) -> anyhow::Result<ExecReport> {
     }
 
     for item in plan.items() {
+        if is_blocked(item) {
+            report.skipped.push(running_skip(item));
+            report.skipped_rule_ids.push(item.rule_id.clone());
+            continue;
+        }
         if let Some(delegate) = &item.delegate {
             match crate::deep::run(delegate, item, plan.dry_run) {
                 Ok(n) => report.bytes += n,
-                Err(e) => report.skipped.push(format!("{}: {e}", item.label)),
+                Err(e) => {
+                    report.skipped.push(format!("{}: {e}", item.label));
+                    report.skipped_rule_ids.push(item.rule_id.clone());
+                }
             }
             continue;
         }
         match item.risk {
             Risk::Safe => {
                 for p in &item.paths {
-                    let n = util::disk_usage(p);
+                    let n = util::disk_usage_recursive(p);
                     remove_path(p)?;
                     report.deleted.push(p.clone());
                     report.bytes += n;
@@ -106,7 +133,7 @@ pub fn execute(plan: &CleanPlan) -> anyhow::Result<ExecReport> {
                     if !p.exists() {
                         continue;
                     }
-                    let n = util::disk_usage(p);
+                    let n = util::disk_usage_recursive(p);
                     let dest = quarantine_dest(&qroot, item, p);
                     move_path(p, &dest)?;
                     manifest.items.push(ManifestItem {
@@ -129,6 +156,13 @@ pub fn execute(plan: &CleanPlan) -> anyhow::Result<ExecReport> {
     }
 
     Ok(report)
+}
+
+fn running_skip(item: &Item) -> String {
+    format!(
+        "{}: skipped because {} is running; quit it to clean this item",
+        item.label, item.tool
+    )
 }
 
 fn write_manifest(qroot: &Path, manifest: &Manifest) -> anyhow::Result<()> {
@@ -287,4 +321,66 @@ fn dir_size(path: &Path) -> u64 {
 
 pub fn adapter_running(id: &str) -> bool {
     adapters::by_id(id).map(|a| a.is_running()).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{CleanMode, Item, Risk};
+
+    fn item(tool: &str, path: PathBuf, requires_stopped: bool) -> Item {
+        Item {
+            rule_id: format!("{tool}.cache"),
+            tool: tool.into(),
+            label: format!("{tool} cache"),
+            paths: vec![path],
+            bytes: 1,
+            risk: Risk::Safe,
+            requires_stopped,
+            consequence: String::new(),
+            oldest_mtime: None,
+            newest_mtime: None,
+            delegate: None,
+        }
+    }
+
+    #[test]
+    fn running_tool_items_do_not_block_unrelated_cleanup() {
+        let dir = std::env::temp_dir().join(format!(
+            "agentsweep-per-tool-blocker-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let codex_target = dir.join("codex-cache.bin");
+        let cursor_target = dir.join("cursor-cache.bin");
+        fs::write(&codex_target, vec![0u8; 1024]).unwrap();
+        fs::write(&cursor_target, vec![0u8; 2048]).unwrap();
+
+        let plan = CleanPlan::try_new(
+            vec![
+                item("codex", codex_target.clone(), true),
+                item("cursor", cursor_target.clone(), false),
+            ],
+            CleanMode::Safe,
+            false,
+        )
+        .unwrap();
+        let report = execute_with_blockers(&plan, &["codex".into()]).unwrap();
+
+        assert!(
+            codex_target.exists(),
+            "the running tool's item is untouched"
+        );
+        assert!(
+            !cursor_target.exists(),
+            "the unrelated item is still cleaned"
+        );
+        assert!(report
+            .skipped
+            .iter()
+            .any(|skip| skip.contains("codex is running")));
+        assert!(report.deleted.contains(&cursor_target));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

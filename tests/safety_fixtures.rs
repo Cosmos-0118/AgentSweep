@@ -72,6 +72,29 @@ fn safe_item_is_deleted_and_critical_is_refused() {
 }
 
 #[test]
+fn reclaimed_bytes_include_directory_contents() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = setup("directory-size");
+    let target = dir.join("cache");
+    fs::create_dir_all(target.join("nested")).unwrap();
+    fs::write(target.join("nested/payload.bin"), vec![0u8; 8192]).unwrap();
+    let expected = util::disk_usage_recursive(&target);
+    assert!(expected >= 8192);
+
+    let plan = CleanPlan::try_new(
+        vec![item("f.cache_dir", Risk::Safe, target.clone(), expected)],
+        CleanMode::Safe,
+        false,
+    )
+    .unwrap();
+    let report = execute::execute(&plan).unwrap();
+
+    assert!(!target.exists());
+    assert_eq!(report.bytes, expected);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn review_item_is_quarantined_and_restored() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = setup("quar");

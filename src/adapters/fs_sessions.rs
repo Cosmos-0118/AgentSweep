@@ -36,7 +36,7 @@ pub fn enrich_stale_children(
         if root.is_file() {
             if let Some(mt) = util::path_mtime(root) {
                 if mt <= cutoff {
-                    bytes = bytes.saturating_add(util::disk_usage(root));
+                    bytes = bytes.saturating_add(util::disk_usage_recursive(root));
                     count += 1;
                     stale_paths.push(root.clone());
                     merge_time(&mut oldest, &mut newest, mt);
@@ -55,7 +55,7 @@ pub fn enrich_stale_children(
             if mt > cutoff {
                 continue;
             }
-            let size = util::disk_usage(&path);
+            let size = util::disk_usage_recursive(&path);
             if size == 0 {
                 continue;
             }

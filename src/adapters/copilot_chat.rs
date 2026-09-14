@@ -304,7 +304,7 @@ pub fn delete_stale_sessions(app_root: &Path) -> anyhow::Result<u64> {
         anyhow::bail!("VS Code reports no deletable Copilot Chat sessions");
     }
 
-    let before = util::disk_usage(&db).saturating_add(util::disk_usage(&jsonl_dir));
+    let before = util::disk_usage(&db).saturating_add(util::disk_usage_recursive(&jsonl_dir));
 
     if db.exists() {
         let conn = open_readwrite(&db)?;
@@ -354,7 +354,7 @@ pub fn delete_stale_sessions(app_root: &Path) -> anyhow::Result<u64> {
         }
     }
 
-    let after = util::disk_usage(&db).saturating_add(util::disk_usage(&jsonl_dir));
+    let after = util::disk_usage(&db).saturating_add(util::disk_usage_recursive(&jsonl_dir));
     Ok(before.saturating_sub(after))
 }
 
