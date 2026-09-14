@@ -86,3 +86,29 @@ jobs:
           git add homebrew/agentsweep.rb
           git commit -m "chore: update homebrew formula for ${GITHUB_REF_NAME}"
           git push origin HEAD:main
+      - name: check tap token
+        id: tap
+        run: echo "present=${{ secrets.HOMEBREW_TAP_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+      - name: checkout tap
+        if: steps.tap.outputs.present == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: Cosmos-0118/homebrew-agentsweep
+          path: tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: sync formula to tap
+        if: steps.tap.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula
+          cp homebrew/agentsweep.rb tap/Formula/agentsweep.rb
+          cd tap
+          if git diff --quiet -- Formula/agentsweep.rb; then
+            echo "tap formula already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/agentsweep.rb
+          git commit -m "agentsweep ${GITHUB_REF_NAME}"
+          git push origin HEAD:main

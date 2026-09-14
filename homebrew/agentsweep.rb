@@ -1,7 +1,11 @@
 # Homebrew formula for AgentSweep.
-# Host this tap at <you>/homebrew-agentsweep as Formula/agentsweep.rb.
-# version + sha256 below are updated automatically by .github/workflows/release.yml
-# (scripts/update_homebrew_sha.py) whenever a v* tag is released.
+# This is the source of truth: .github/workflows/release.yml regenerates
+# version/url/sha256 on every v* tag (via scripts/update_homebrew_sha.py),
+# commits the result here, and syncs a copy to Formula/agentsweep.rb in the
+# Cosmos-0118/homebrew-agentsweep tap repo.
+# Install with:
+#   brew tap Cosmos-0118/agentsweep
+#   brew install agentsweep
 class Agentsweep < Formula
   desc "Understand and control what your coding agents store locally"
   homepage "https://github.com/Cosmos-0118/AgentSweep"
