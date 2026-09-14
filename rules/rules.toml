@@ -1,0 +1,996 @@
+[[rule]]
+id = "codex.logs.sqlite"
+tool = "codex"
+root = "home"
+label = "Diagnostic logs"
+paths = ["logs_2.sqlite", "logs_2.sqlite-wal", "logs_2.sqlite-shm"]
+risk = "safe"
+requires_stopped = true
+older_than_days = 0
+consequence = "Deletes local diagnostic logs only. Codex recreates them on next run."
+
+[[rule]]
+id = "codex.logs.text"
+tool = "codex"
+root = "home"
+label = "Text logs"
+paths = ["log"]
+risk = "safe"
+older_than_days = 0
+consequence = "Deletes Codex text/TUI logs. They are recreated automatically."
+
+[[rule]]
+id = "codex.cache"
+tool = "codex"
+root = "home"
+label = "Model and tool caches"
+paths = ["cache", "models_cache.json"]
+risk = "safe"
+older_than_days = 0
+consequence = "Deletes regenerable model/plugin catalog caches. Not plugin payloads."
+
+[[rule]]
+id = "codex.tmp"
+tool = "codex"
+root = "home"
+label = "Temporary files"
+paths = ["tmp", ".tmp"]
+risk = "safe"
+requires_stopped = true
+older_than_days = 0
+consequence = "Deletes Codex runtime temp files. Safe only while Codex is stopped."
+
+[[rule]]
+id = "codex.shell_snapshots"
+tool = "codex"
+root = "home"
+label = "Stale shell snapshots"
+paths = ["shell_snapshots"]
+risk = "safe"
+older_than_days = 3
+consequence = "Deletes shell environment snapshots older than 3 days. Codex already treats these as stale. They can contain exported secrets."
+
+[[rule]]
+id = "codex.attachments"
+tool = "codex"
+root = "home"
+label = "Session artifacts"
+paths = ["attachments", "generated_images", "computer-use", "visualizations"]
+risk = "review"
+older_than_days = 0
+consequence = "Deletes generated images and session artifacts. Conversations stay. Some tool outputs cannot be regenerated."
+
+[[rule]]
+id = "codex.history"
+tool = "codex"
+root = "home"
+label = "Prompt history"
+paths = ["history.jsonl"]
+risk = "userdata"
+older_than_days = 0
+consequence = "Deletes typed prompt history. Up/down recall is gone. Conversation transcripts are stored elsewhere and are NOT deleted."
+
+[[rule]]
+id = "codex.sessions"
+tool = "codex"
+root = "home"
+label = "Conversation sessions"
+paths = ["sessions"]
+risk = "userdata"
+older_than_days = 0
+consequence = "Deletes full conversation rollouts. You will not be able to resume those threads."
+
+[[rule]]
+id = "codex.archived_sessions"
+tool = "codex"
+root = "home"
+label = "Archived sessions"
+paths = ["archived_sessions", "session_index.jsonl"]
+risk = "userdata"
+older_than_days = 0
+consequence = "Deletes archived conversation rollouts and thread name metadata."
+
+[[rule]]
+id = "codex.auth"
+tool = "codex"
+root = "home"
+label = "Credentials"
+paths = ["auth.json", ".credentials.json"]
+risk = "critical"
+consequence = "Login and API credentials. AgentSweep will never delete these."
+
+[[rule]]
+id = "codex.config"
+tool = "codex"
+root = "home"
+label = "Configuration"
+paths = ["config.toml", "AGENTS.md", "hooks.json", "keybindings.json", "skills", "rules"]
+risk = "critical"
+consequence = "Codex settings, skills, hooks and keybindings. Never deleted."
+
+[[rule]]
+id = "codex.state"
+tool = "codex"
+root = "home"
+label = "Live session state"
+paths = ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"]
+risk = "critical"
+consequence = "Thread/session indexes. Deleting this corrupts resume. Never deleted."
+
+[[rule]]
+id = "codex.memories"
+tool = "codex"
+root = "home"
+label = "Memories"
+paths = ["memories", "memories_1.sqlite", "memories_1.sqlite-wal", "memories_1.sqlite-shm"]
+risk = "critical"
+consequence = "Persistent Codex memories. Never deleted."
+
+[[rule]]
+id = "codex.goals"
+tool = "codex"
+root = "home"
+label = "Goals and queue"
+paths = ["goals_1.sqlite", "goals_1.sqlite-wal", "goals_1.sqlite-shm", "queue_1.sqlite", "queue_1.sqlite-wal", "queue_1.sqlite-shm"]
+risk = "critical"
+consequence = "Goal and background queue state. Never deleted."
+
+[[rule]]
+id = "codex.plugins"
+tool = "codex"
+root = "home"
+label = "Installed plugins"
+paths = ["plugins"]
+risk = "critical"
+consequence = "Installed plugin payloads live here, including plugins/cache. Deleting them leaves plugins marked installed but empty. Never deleted."
+
+[[rule]]
+id = "codex.unknown.extra"
+tool = "codex"
+root = "home"
+label = "Unclassified Codex data"
+paths = ["ipc", "pets", "automations", "node_repl", "telemetry", "dictation-history", "packages", "agents"]
+risk = "unknown"
+consequence = "Not in the known Codex storage map. Shown for size only. Never deleted."
+
+[[rule]]
+id = "claude.plans"
+tool = "claude"
+root = "home"
+label = "Old plan files"
+paths = ["plans"]
+risk = "safe"
+consequence = "Deletes old plan-mode files. Claude already auto-cleans these after cleanupPeriodDays."
+
+[[rule]]
+id = "claude.debug"
+tool = "claude"
+root = "home"
+label = "Debug logs"
+paths = ["debug", "daemon.log"]
+risk = "safe"
+consequence = "Deletes Claude debug logs."
+
+[[rule]]
+id = "claude.paste_cache"
+tool = "claude"
+root = "home"
+label = "Paste cache"
+paths = ["paste-cache"]
+risk = "safe"
+consequence = "Deletes large pasted inputs. They can be re-pasted."
+
+[[rule]]
+id = "claude.image_cache"
+tool = "claude"
+root = "home"
+label = "Image cache"
+paths = ["image-cache"]
+risk = "safe"
+consequence = "Deletes cached attached images."
+
+[[rule]]
+id = "claude.session_env"
+tool = "claude"
+root = "home"
+label = "Session environment"
+paths = ["session-env", "tasks", "shell-snapshots", "backups", "todos"]
+risk = "safe"
+consequence = "Deletes session metadata, tasks, shell snapshots, migration backups and legacy todos."
+
+[[rule]]
+id = "claude.stats"
+tool = "claude"
+root = "home"
+label = "Usage statistics"
+paths = ["stats-cache.json"]
+risk = "review"
+consequence = "Deletes historical /usage totals. Claude keeps working."
+
+[[rule]]
+id = "claude.file_history"
+tool = "claude"
+root = "home"
+label = "File checkpoints"
+paths = ["file-history"]
+risk = "userdata"
+consequence = "Deletes pre-edit snapshots used by /rewind. Past sessions cannot restore files."
+
+[[rule]]
+id = "claude.history"
+tool = "claude"
+root = "home"
+label = "Prompt history"
+paths = ["history.jsonl"]
+risk = "userdata"
+consequence = "Deletes typed prompt history. Up/down recall is gone. Project transcripts stay."
+
+[[rule]]
+id = "claude.projects"
+tool = "claude"
+root = "home"
+label = "Project transcripts"
+paths = ["projects"]
+risk = "userdata"
+delegate = "claude.project_purge"
+consequence = "Deletes project chat transcripts via Claude's own purge command. You cannot resume those chats."
+
+[[rule]]
+id = "claude.dotfile"
+tool = "claude"
+root = "dotfile"
+label = "App state and OAuth"
+paths = ["."]
+risk = "critical"
+consequence = "~/.claude.json holds OAuth, MCP config and per-project state. Never deleted."
+
+[[rule]]
+id = "claude.config"
+tool = "claude"
+root = "home"
+label = "Configuration"
+paths = ["settings.json", "CLAUDE.md", "agents", "skills", "rules", "plugins", "hooks"]
+risk = "critical"
+consequence = "Claude settings, skills, agents, rules, hooks and plugins. Never deleted."
+
+[[rule]]
+id = "claude.unknown.extra"
+tool = "claude"
+root = "home"
+label = "Unclassified Claude data"
+paths = ["daemon", "jobs", "memory", "telemetry", "downloads", "cache", "sessions"]
+risk = "unknown"
+consequence = "Not in the published Claude storage map. Shown for size only. Never deleted."
+
+[[rule]]
+id = "opencode.cache"
+tool = "opencode"
+root = "cache"
+label = "Package and skill cache"
+paths = ["."]
+risk = "safe"
+consequence = "Deletes ~/.cache/opencode. OpenCode rebuilds it. Official troubleshooting step."
+
+[[rule]]
+id = "opencode.logs"
+tool = "opencode"
+root = "log"
+label = "Logs"
+paths = ["."]
+risk = "safe"
+consequence = "Deletes OpenCode logs and profiles."
+
+[[rule]]
+id = "opencode.tmp"
+tool = "opencode"
+root = "tmp"
+label = "Temp files"
+paths = ["."]
+risk = "safe"
+requires_stopped = true
+consequence = "Deletes OpenCode temp files. Safe only while OpenCode is stopped."
+
+[[rule]]
+id = "opencode.state_service"
+tool = "opencode"
+root = "state"
+label = "Service registration"
+paths = ["service.json"]
+risk = "safe"
+requires_stopped = true
+consequence = "Deletes the stopped-service registration file."
+
+[[rule]]
+id = "opencode.repos"
+tool = "opencode"
+root = "repos"
+label = "Cloned reference repos"
+paths = ["."]
+risk = "review"
+consequence = "Deletes cloned reference repositories. They can be re-fetched. Offline work will need a re-clone."
+
+[[rule]]
+id = "opencode.tool_output"
+tool = "opencode"
+root = "data"
+label = "Tool output"
+paths = ["tool-output"]
+risk = "review"
+consequence = "Deletes tool/session-associated outputs. Conversations stay."
+
+[[rule]]
+id = "opencode.snapshots"
+tool = "opencode"
+root = "data"
+label = "Filesystem snapshots"
+paths = ["snapshot"]
+risk = "review"
+delegate = "opencode.snapshot_prune"
+consequence = "Deletes /undo /redo filesystem rollback history. Conversations stay. Old file restoration becomes unavailable."
+
+[[rule]]
+id = "opencode.sessions"
+tool = "opencode"
+root = "data"
+label = "Old sessions"
+paths = []
+risk = "userdata"
+delegate = "opencode.session_delete"
+consequence = "Deletes selected sessions through OpenCode's own command, then vacuums the database. Auth and config stay."
+
+[[rule]]
+id = "opencode.auth"
+tool = "opencode"
+root = "data"
+label = "Credentials"
+paths = ["auth.json", "account.json"]
+risk = "critical"
+consequence = "Provider credentials. Never deleted."
+
+[[rule]]
+id = "opencode.db"
+tool = "opencode"
+root = "data"
+label = "Session database"
+paths = ["opencode.db", "opencode.db-wal", "opencode.db-shm"]
+risk = "critical"
+consequence = "The live session database. AgentSweep never deletes this file. Use session cleanup instead."
+
+[[rule]]
+id = "opencode.config"
+tool = "opencode"
+root = "config"
+label = "Configuration"
+paths = ["."]
+risk = "critical"
+consequence = "Models, plugins, MCP and user config. Never deleted."
+
+[[rule]]
+id = "opencode.legacy_storage"
+tool = "opencode"
+root = "data"
+label = "Legacy JSON storage"
+paths = ["storage"]
+risk = "unknown"
+delegate = "opencode.legacy_guard"
+consequence = "Old JSON session system. Refused if any sessions are not in the SQLite database."
+
+[[rule]]
+id = "codex.desktop.cache"
+tool = "codex"
+root = "desktop"
+label = "Desktop app caches"
+paths = ["Crashpad", "Safe Browsing", "ChromeFeatureState", "CertificateRevocation", "SafetyTips", "SSLErrorAssistant", "PrivacySandboxAttestationsPreloaded", "FirstPartySetsPreloaded", "OnDeviceHeadSuggestModel", "WasmTtsEngine", "ZxcvbnData", "BrowserMetrics-spare.pma", "GrShaderCache", "GraphiteDawnCache"]
+risk = "safe"
+requires_stopped = true
+consequence = "Standard Chromium component/safe-browsing caches used by the Codex desktop app. Regenerated automatically."
+
+[[rule]]
+id = "codex.desktop.profile"
+tool = "codex"
+root = "desktop"
+label = "Desktop app profile"
+paths = ["Default"]
+risk = "review"
+requires_stopped = true
+consequence = "Codex desktop app's embedded browser profile (cache, local storage, cookies). Not documented as safe; may include sign-in state."
+
+[[rule]]
+id = "claude.desktop.cache"
+tool = "claude"
+root = "desktop"
+label = "Desktop app caches"
+paths = ["Cache", "Code Cache", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache"]
+risk = "safe"
+requires_stopped = true
+consequence = "Standard Chromium render/compile caches used by the Claude desktop app. Regenerated automatically."
+
+[[rule]]
+id = "claude.desktop.webdata"
+tool = "claude"
+root = "desktop"
+label = "Desktop webview storage"
+paths = ["IndexedDB", "Local Storage", "Session Storage", "Partitions"]
+risk = "review"
+requires_stopped = true
+consequence = "Webview storage for the desktop app UI. May include sign-in/session state; you may need to re-authenticate."
+
+[[rule]]
+id = "claude.desktop.vm_bundles"
+tool = "claude"
+root = "desktop"
+label = "Sandbox VM images"
+paths = ["vm_bundles"]
+risk = "unknown"
+consequence = "Sandbox VM images for Claude's code execution feature. Not documented by Anthropic as safe to delete. Shown for size only."
+
+[[rule]]
+id = "claude.desktop.unknown"
+tool = "claude"
+root = "desktop"
+label = "Unclassified desktop runtime data"
+paths = ["claude-code-vm", "claude-code", "claude-code-sessions", "local-agent-mode-sessions"]
+risk = "unknown"
+consequence = "Not in the published Claude storage map. Shown for size only. Never deleted."
+
+[[rule]]
+id = "vscode.cli.extensions"
+tool = "vscode"
+root = "cli"
+label = "Installed extensions"
+paths = ["extensions"]
+risk = "critical"
+consequence = "Installed VS Code extension payloads. Deleting leaves extensions marked installed but empty. Never deleted."
+
+[[rule]]
+id = "vscode.cli.config"
+tool = "vscode"
+root = "cli"
+label = "CLI configuration"
+paths = ["argv.json"]
+risk = "critical"
+consequence = "VS Code CLI startup flags. Never deleted."
+
+[[rule]]
+id = "vscode.app.cache"
+tool = "vscode"
+root = "app"
+label = "Render and compile caches"
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Chromium render/compile caches. Regenerated automatically."
+
+[[rule]]
+id = "vscode.app.extension_installers"
+tool = "vscode"
+root = "app"
+label = "Extension installer cache"
+paths = ["CachedExtensionVSIXs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Downloaded .vsix installer packages for already-installed extensions. Re-downloaded if needed."
+
+[[rule]]
+id = "vscode.app.webdata"
+tool = "vscode"
+root = "app"
+label = "Webview storage"
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Webview storage, including extension sign-in/session state. Some extensions may need to re-authenticate."
+
+[[rule]]
+id = "vscode.app.history"
+tool = "vscode"
+root = "app"
+label = "Local file history"
+paths = ["User/History"]
+risk = "userdata"
+consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
+
+[[rule]]
+id = "vscode.app.workspace_storage"
+tool = "vscode"
+root = "app"
+label = "Workspace storage"
+paths = ["User/workspaceStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Per-workspace extension state, including Copilot Chat sessions for that workspace. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
+
+[[rule]]
+id = "vscode.app.config"
+tool = "vscode"
+root = "app"
+label = "Configuration and chat database"
+paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json", "User/chatLanguageModels.json"]
+risk = "critical"
+consequence = "User settings, profiles and globalStorage (including state.vscdb, which holds Copilot Chat sessions and extension state). Never deleted."
+
+[[rule]]
+id = "cursor.cli.extensions"
+tool = "cursor"
+root = "cli"
+label = "Installed extensions"
+paths = ["extensions"]
+risk = "critical"
+consequence = "Installed Cursor extension payloads. Deleting leaves extensions marked installed but empty. Never deleted."
+
+[[rule]]
+id = "cursor.cli.config"
+tool = "cursor"
+root = "cli"
+label = "Configuration"
+paths = ["argv.json", "cli-config.json", "ide_state.json", "hooks.json", "mcp.json", "hooks", "agents", "skills-cursor"]
+risk = "critical"
+consequence = "Cursor CLI flags, hooks, MCP config and agent/skill definitions. Never deleted."
+
+[[rule]]
+id = "cursor.cli.sessions"
+tool = "cursor"
+root = "cli"
+label = "cursor-agent sessions"
+paths = ["projects"]
+risk = "userdata"
+consequence = "cursor-agent CLI conversation transcripts. You will not be able to resume those threads."
+
+[[rule]]
+id = "cursor.cli.plans"
+tool = "cursor"
+root = "cli"
+label = "Old plan files"
+paths = ["plans"]
+risk = "safe"
+consequence = "Deletes old agent plan files."
+
+[[rule]]
+id = "cursor.cli.unknown"
+tool = "cursor"
+root = "cli"
+label = "Unclassified Cursor data"
+paths = ["ai-tracking"]
+risk = "unknown"
+consequence = "Not documented. Shown for size only. Never deleted."
+
+[[rule]]
+id = "cursor.dotfile"
+tool = "cursor"
+root = "dotfile"
+label = "Login credentials"
+paths = ["."]
+risk = "critical"
+consequence = "~/.cursor_info holds a Cursor authentication token. Never deleted."
+
+[[rule]]
+id = "cursor.app.cache"
+tool = "cursor"
+root = "app"
+label = "Render and compile caches"
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Chromium render/compile caches. Regenerated automatically."
+
+[[rule]]
+id = "cursor.app.updater"
+tool = "cursor"
+root = "app"
+label = "Updater and crash-report state"
+paths = ["process-monitor", "update-supervisor", "sentry"]
+risk = "safe"
+requires_stopped = true
+consequence = "Auto-updater process state and crash-report caches. Regenerated automatically."
+
+[[rule]]
+id = "cursor.app.extension_installers"
+tool = "cursor"
+root = "app"
+label = "Extension installer cache"
+paths = ["CachedExtensionVSIXs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Downloaded .vsix installer packages for already-installed extensions. Re-downloaded if needed."
+
+[[rule]]
+id = "cursor.app.webdata"
+tool = "cursor"
+root = "app"
+label = "Webview storage"
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Webview storage, including sign-in/session state. You may need to re-authenticate."
+
+[[rule]]
+id = "cursor.app.snapshots"
+tool = "cursor"
+root = "app"
+label = "Agent checkpoints"
+paths = ["snapshots"]
+risk = "review"
+requires_stopped = true
+consequence = "Likely Cursor's agent edit checkpoint/rollback history (undocumented). Deleting may remove the ability to restore earlier agent edits."
+
+[[rule]]
+id = "cursor.app.history"
+tool = "cursor"
+root = "app"
+label = "Local file history"
+paths = ["User/History"]
+risk = "userdata"
+consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
+
+[[rule]]
+id = "cursor.app.workspace_storage"
+tool = "cursor"
+root = "app"
+label = "Workspace storage"
+paths = ["User/workspaceStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Per-workspace chat and extension state. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
+
+[[rule]]
+id = "cursor.app.config"
+tool = "cursor"
+root = "app"
+label = "Configuration and chat database"
+paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json"]
+risk = "critical"
+consequence = "User settings and globalStorage (including state.vscdb, which holds Cursor's chat sessions and conversation-search index). Never deleted."
+
+[[rule]]
+id = "cursor.app.unknown"
+tool = "cursor"
+root = "app"
+label = "Unclassified Cursor data"
+paths = ["AgentStores"]
+risk = "unknown"
+consequence = "Not documented. Shown for size only. Never deleted."
+
+[[rule]]
+id = "windsurf.cli.extensions"
+tool = "windsurf"
+root = "cli"
+label = "Installed extensions"
+paths = ["extensions"]
+risk = "critical"
+consequence = "Installed Windsurf extension payloads. Deleting leaves extensions marked installed but empty. Never deleted."
+
+[[rule]]
+id = "windsurf.cli.config"
+tool = "windsurf"
+root = "cli"
+label = "CLI configuration"
+paths = ["argv.json"]
+risk = "critical"
+consequence = "Windsurf CLI startup flags. Never deleted."
+
+[[rule]]
+id = "windsurf.codeium.ws_browser"
+tool = "windsurf"
+root = "codeium"
+label = "Downloaded browser binaries"
+paths = ["ws-browser"]
+risk = "review"
+consequence = "Downloaded embedded Chromium/ffmpeg binaries used by Windsurf's browser preview tools. Re-downloaded automatically on next use; can be slow to refetch."
+
+[[rule]]
+id = "windsurf.codeium.memories"
+tool = "windsurf"
+root = "codeium"
+label = "Cascade memories"
+paths = ["memories", "windsurf/memories"]
+risk = "critical"
+consequence = "Persistent Cascade memories, including global_rules.md. Never deleted."
+
+[[rule]]
+id = "windsurf.codeium.cascade"
+tool = "windsurf"
+root = "codeium"
+label = "Cascade sessions"
+paths = ["cascade", "windsurf/cascade"]
+risk = "userdata"
+consequence = "Cascade agent chat/session data. Deleting removes chat history for those sessions."
+
+[[rule]]
+id = "windsurf.codeium.config"
+tool = "windsurf"
+root = "codeium"
+label = "Configuration"
+paths = ["windsurf/user_settings.pb", "windsurf/mcp_config.json", "windsurf/installation_id", "installation_id"]
+risk = "critical"
+consequence = "Windsurf/Cascade user settings, MCP config and installation identity. Never deleted."
+
+[[rule]]
+id = "windsurf.codeium.database"
+tool = "windsurf"
+root = "codeium"
+label = "Local database"
+paths = ["database", "windsurf/database"]
+risk = "critical"
+consequence = "Local Cascade/Windsurf database. Never deleted."
+
+[[rule]]
+id = "windsurf.codeium.code_tracker"
+tool = "windsurf"
+root = "codeium"
+label = "Edit history tracker"
+paths = ["code_tracker", "windsurf/code_tracker"]
+risk = "userdata"
+consequence = "Local file-edit history used for Cascade's change tracking. Deleting loses that edit history."
+
+[[rule]]
+id = "windsurf.codeium.codemaps"
+tool = "windsurf"
+root = "codeium"
+label = "Code index cache"
+paths = ["windsurf/codemaps"]
+risk = "review"
+consequence = "Codebase indexing cache used for code search. Regenerates on next index; re-indexing large repos can be slow."
+
+[[rule]]
+id = "windsurf.codeium.unknown"
+tool = "windsurf"
+root = "codeium"
+label = "Unclassified Codeium data"
+paths = ["brain", "recipes", "changelog", "context_state", "university", "implicit", "windsurf/brain", "windsurf/implicit", "windsurf/context_state", "windsurf/native_storage_migrations.lock", "ws-browser-profile"]
+risk = "unknown"
+consequence = "Not documented. Shown for size only. Never deleted."
+
+[[rule]]
+id = "windsurf.app.cache"
+tool = "windsurf"
+root = "app"
+label = "Render and compile caches"
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Chromium render/compile caches. Regenerated automatically."
+
+[[rule]]
+id = "windsurf.app.extension_installers"
+tool = "windsurf"
+root = "app"
+label = "Extension installer cache"
+paths = ["CachedExtensionVSIXs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Downloaded .vsix installer packages for already-installed extensions. Re-downloaded if needed."
+
+[[rule]]
+id = "windsurf.app.webdata"
+tool = "windsurf"
+root = "app"
+label = "Webview storage"
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Webview storage, including sign-in/session state. You may need to re-authenticate."
+
+[[rule]]
+id = "windsurf.app.history"
+tool = "windsurf"
+root = "app"
+label = "Local file history"
+paths = ["User/History"]
+risk = "userdata"
+consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
+
+[[rule]]
+id = "windsurf.app.workspace_storage"
+tool = "windsurf"
+root = "app"
+label = "Workspace storage"
+paths = ["User/workspaceStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Per-workspace chat and extension state. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
+
+[[rule]]
+id = "windsurf.app.config"
+tool = "windsurf"
+root = "app"
+label = "Configuration and chat database"
+paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json"]
+risk = "critical"
+consequence = "User settings and globalStorage (including state.vscdb). Never deleted."
+
+[[rule]]
+id = "kiro.cli.extensions"
+tool = "kiro"
+root = "cli"
+label = "Installed extensions"
+paths = ["extensions"]
+risk = "critical"
+consequence = "Installed Kiro extension payloads. Deleting leaves extensions marked installed but empty. Never deleted."
+
+[[rule]]
+id = "kiro.cli.config"
+tool = "kiro"
+root = "cli"
+label = "Configuration"
+paths = ["argv.json", "powers", "skills", "steering", "workspace-roots", ".trust-migration.json"]
+risk = "critical"
+consequence = "Kiro CLI flags, MCP power registries, skills and steering documents. Never deleted."
+
+[[rule]]
+id = "kiro.cli.sessions"
+tool = "kiro"
+root = "cli"
+label = "Agent sessions"
+paths = ["sessions"]
+risk = "userdata"
+consequence = "Kiro agent conversation sessions. You will not be able to resume those threads."
+
+[[rule]]
+id = "kiro.cli.logs"
+tool = "kiro"
+root = "cli"
+label = "Logs"
+paths = ["logs"]
+risk = "safe"
+consequence = "Kiro diagnostic logs. Recreated automatically."
+
+[[rule]]
+id = "kiro.app.cache"
+tool = "kiro"
+root = "app"
+label = "Render and compile caches"
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Chromium render/compile caches. Regenerated automatically."
+
+[[rule]]
+id = "kiro.app.extension_installers"
+tool = "kiro"
+root = "app"
+label = "Extension installer cache"
+paths = ["CachedExtensionVSIXs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Downloaded .vsix installer packages for already-installed extensions. Re-downloaded if needed."
+
+[[rule]]
+id = "kiro.app.webdata"
+tool = "kiro"
+root = "app"
+label = "Webview storage"
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Webview storage, including sign-in/session state. You may need to re-authenticate."
+
+[[rule]]
+id = "kiro.app.history"
+tool = "kiro"
+root = "app"
+label = "Local file history"
+paths = ["User/History"]
+risk = "userdata"
+consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
+
+[[rule]]
+id = "kiro.app.workspace_storage"
+tool = "kiro"
+root = "app"
+label = "Workspace storage"
+paths = ["User/workspaceStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Per-workspace chat and extension state. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
+
+[[rule]]
+id = "kiro.app.config"
+tool = "kiro"
+root = "app"
+label = "Configuration and chat database"
+paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json"]
+risk = "critical"
+consequence = "User settings and globalStorage (including state.vscdb). Never deleted."
+
+[[rule]]
+id = "antigravity.cli.extensions"
+tool = "antigravity"
+root = "cli"
+label = "Installed extensions (stable)"
+paths = ["extensions"]
+risk = "critical"
+consequence = "Installed Antigravity extension payloads. Deleting leaves extensions marked installed but empty. Never deleted."
+
+[[rule]]
+id = "antigravity.cli.config"
+tool = "antigravity"
+root = "cli"
+label = "CLI configuration (stable)"
+paths = ["argv.json"]
+risk = "critical"
+consequence = "Antigravity CLI startup flags. Never deleted."
+
+[[rule]]
+id = "antigravity.ide.extensions"
+tool = "antigravity"
+root = "ide"
+label = "Installed extensions (IDE channel)"
+paths = ["extensions"]
+risk = "critical"
+consequence = "Installed Antigravity IDE-channel extension payloads. Deleting leaves extensions marked installed but empty. Never deleted."
+
+[[rule]]
+id = "antigravity.ide.config"
+tool = "antigravity"
+root = "ide"
+label = "CLI configuration (IDE channel)"
+paths = ["argv.json"]
+risk = "critical"
+consequence = "Antigravity IDE-channel CLI startup flags. Never deleted."
+
+[[rule]]
+id = "antigravity.cockpit"
+tool = "antigravity"
+root = "cockpit"
+label = "Cockpit cache"
+paths = ["."]
+risk = "safe"
+consequence = "Cached quota usage and model-list data for Antigravity's cockpit companion. Regenerates automatically."
+
+[[rule]]
+id = "antigravity.app.cache"
+tool = "antigravity"
+root = "app"
+label = "Render and compile caches"
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Chromium render/compile caches. Regenerated automatically."
+
+[[rule]]
+id = "antigravity.app.extension_installers"
+tool = "antigravity"
+root = "app"
+label = "Extension installer cache"
+paths = ["CachedExtensionVSIXs"]
+risk = "safe"
+requires_stopped = true
+consequence = "Downloaded .vsix installer packages for already-installed extensions. Re-downloaded if needed."
+
+[[rule]]
+id = "antigravity.app.webdata"
+tool = "antigravity"
+root = "app"
+label = "Webview storage"
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Webview storage, including sign-in/session state. You may need to re-authenticate."
+
+[[rule]]
+id = "antigravity.app.history"
+tool = "antigravity"
+root = "app"
+label = "Local file history"
+paths = ["User/History"]
+risk = "userdata"
+consequence = "Pre-edit local file snapshots used for the editor's local history/timeline. Deleting loses the ability to restore past versions."
+
+[[rule]]
+id = "antigravity.app.workspace_storage"
+tool = "antigravity"
+root = "app"
+label = "Workspace storage"
+paths = ["User/workspaceStorage"]
+risk = "review"
+requires_stopped = true
+consequence = "Per-workspace chat and extension state. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
+
+[[rule]]
+id = "antigravity.app.config"
+tool = "antigravity"
+root = "app"
+label = "Configuration and chat database"
+paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json"]
+risk = "critical"
+consequence = "User settings and globalStorage (including state.vscdb). Never deleted."

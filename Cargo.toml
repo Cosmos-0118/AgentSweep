@@ -1,0 +1,29 @@
+[package]
+name = "agentsweep"
+version = "0.1.0"
+edition = "2021"
+description = "Understand and control what your coding agents store locally"
+license = "MIT"
+repository = "https://github.com/agentsweep/agentsweep"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+clap = { version = "4.6.6", features = ["derive"] }
+crossterm = "0.29.0"
+globset = "0.4.20"
+humansize = "2.1.3"
+indicatif = "0.18.6"
+jwalk = "0.9.0"
+ratatui = "0.30.2"
+rayon = "1.12.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sysinfo = "0.38.4"
+toml = "1.1.6"
