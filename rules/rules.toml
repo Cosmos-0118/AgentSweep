@@ -502,13 +502,24 @@ requires_stopped = true
 consequence = "Per-workspace extension state, including Copilot Chat sessions for that workspace. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
 
 [[rule]]
+id = "vscode.app.chat_sessions"
+tool = "vscode"
+root = "app"
+label = "Copilot chats inactive >=30d"
+paths = []
+risk = "userdata"
+requires_stopped = true
+delegate = "vscode.chat_session_delete"
+consequence = "Permanently deletes Copilot Chat sessions inactive for 30+ days from session-store.db and empty-window transcripts, then VACUUMs. Recent chats stay. This cannot be restored from quarantine."
+
+[[rule]]
 id = "vscode.app.config"
 tool = "vscode"
 root = "app"
 label = "Configuration and chat database"
 paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json", "User/chatLanguageModels.json"]
 risk = "critical"
-consequence = "User settings, profiles and globalStorage (including state.vscdb, which holds Copilot Chat sessions and extension state). Never deleted."
+consequence = "User settings, profiles and globalStorage (including state.vscdb and Copilot Chat). Never deleted as a tree. Use Copilot chat cleanup for chats inactive 30+ days."
 
 [[rule]]
 id = "cursor.cli.extensions"
@@ -532,10 +543,10 @@ consequence = "Cursor CLI flags, hooks, MCP config and agent/skill definitions. 
 id = "cursor.cli.sessions"
 tool = "cursor"
 root = "cli"
-label = "cursor-agent sessions"
+label = "cursor-agent transcripts"
 paths = ["projects"]
 risk = "userdata"
-consequence = "cursor-agent CLI conversation transcripts. You will not be able to resume those threads."
+consequence = "cursor-agent project state under ~/.cursor/projects, including JSONL transcripts. IDE Composer history in state.vscdb is separate."
 
 [[rule]]
 id = "cursor.cli.plans"
@@ -635,13 +646,24 @@ requires_stopped = true
 consequence = "Per-workspace chat and extension state. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
 
 [[rule]]
+id = "cursor.app.chat_sessions"
+tool = "cursor"
+root = "app"
+label = "Composer chats inactive >=30d"
+paths = []
+risk = "userdata"
+requires_stopped = true
+delegate = "cursor.chat_session_delete"
+consequence = "Permanently deletes Composer/Agent chats inactive for 30+ days from state.vscdb, then VACUUMs. Recent chats and settings stay. This cannot be restored from quarantine."
+
+[[rule]]
 id = "cursor.app.config"
 tool = "cursor"
 root = "app"
 label = "Configuration and chat database"
 paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json"]
 risk = "critical"
-consequence = "User settings and globalStorage (including state.vscdb, which holds Cursor's chat sessions and conversation-search index). Never deleted."
+consequence = "User settings and globalStorage (including state.vscdb). Never deleted as a tree. Use Composer chat cleanup for chats inactive 30+ days."
 
 [[rule]]
 id = "cursor.app.unknown"
@@ -693,11 +715,11 @@ consequence = "Persistent Cascade memories, including global_rules.md. Never del
 id = "windsurf.codeium.cascade"
 tool = "windsurf"
 root = "codeium"
-label = "Cascade sessions"
+label = "Cascade sessions inactive >=30d"
 paths = ["cascade", "windsurf/cascade"]
 risk = "userdata"
 requires_stopped = true
-consequence = "Cascade agent chat/session data. Deleting removes chat history for those sessions."
+consequence = "Cascade agent chat/session data inactive for 30+ days. Recent Cascade sessions stay."
 
 [[rule]]
 id = "windsurf.codeium.config"
@@ -797,13 +819,24 @@ requires_stopped = true
 consequence = "Per-workspace chat and extension state. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
 
 [[rule]]
+id = "windsurf.app.chat_sessions"
+tool = "windsurf"
+root = "app"
+label = "Composer chats inactive >=30d"
+paths = []
+risk = "userdata"
+requires_stopped = true
+delegate = "windsurf.chat_session_delete"
+consequence = "Permanently deletes Composer/Agent chats inactive for 30+ days from state.vscdb, then VACUUMs. Recent chats and settings stay. This cannot be restored from quarantine."
+
+[[rule]]
 id = "windsurf.app.config"
 tool = "windsurf"
 root = "app"
 label = "Configuration and chat database"
 paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json"]
 risk = "critical"
-consequence = "User settings and globalStorage (including state.vscdb). Never deleted."
+consequence = "User settings and globalStorage (including state.vscdb). Never deleted as a tree. Use Composer chat cleanup for chats inactive 30+ days."
 
 [[rule]]
 id = "kiro.cli.extensions"
@@ -827,10 +860,10 @@ consequence = "Kiro CLI flags, MCP power registries, skills and steering documen
 id = "kiro.cli.sessions"
 tool = "kiro"
 root = "cli"
-label = "Agent sessions"
+label = "Agent sessions inactive >=30d"
 paths = ["sessions"]
 risk = "userdata"
-consequence = "Kiro agent conversation sessions. You will not be able to resume those threads."
+consequence = "Kiro agent conversation sessions inactive for 30+ days. Recent sessions stay."
 
 [[rule]]
 id = "kiro.cli.logs"
@@ -892,13 +925,24 @@ requires_stopped = true
 consequence = "Per-workspace chat and extension state. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
 
 [[rule]]
+id = "kiro.app.chat_sessions"
+tool = "kiro"
+root = "app"
+label = "Composer chats inactive >=30d"
+paths = []
+risk = "userdata"
+requires_stopped = true
+delegate = "kiro.chat_session_delete"
+consequence = "Permanently deletes Composer/Agent chats inactive for 30+ days from state.vscdb, then VACUUMs. Recent chats and settings stay. This cannot be restored from quarantine."
+
+[[rule]]
 id = "kiro.app.config"
 tool = "kiro"
 root = "app"
 label = "Configuration and chat database"
 paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json"]
 risk = "critical"
-consequence = "User settings and globalStorage (including state.vscdb). Never deleted."
+consequence = "User settings and globalStorage (including state.vscdb). Never deleted as a tree. Use Composer chat cleanup for chats inactive 30+ days."
 
 [[rule]]
 id = "antigravity.cli.extensions"
@@ -996,10 +1040,21 @@ requires_stopped = true
 consequence = "Per-workspace chat and extension state. Commonly grows large from workspaces you no longer open; deleting loses that workspace's chat/extension state."
 
 [[rule]]
+id = "antigravity.app.chat_sessions"
+tool = "antigravity"
+root = "app"
+label = "Composer chats inactive >=30d"
+paths = []
+risk = "userdata"
+requires_stopped = true
+delegate = "antigravity.chat_session_delete"
+consequence = "Permanently deletes Composer/Agent chats inactive for 30+ days from state.vscdb, then VACUUMs. Recent chats and settings stay. This cannot be restored from quarantine."
+
+[[rule]]
 id = "antigravity.app.config"
 tool = "antigravity"
 root = "app"
 label = "Configuration and chat database"
 paths = ["User/settings.json", "User/keybindings.json", "User/snippets", "User/profiles", "User/sync", "User/globalStorage", "User/mcp.json"]
 risk = "critical"
-consequence = "User settings and globalStorage (including state.vscdb). Never deleted."
+consequence = "User settings and globalStorage (including state.vscdb). Never deleted as a tree. Use Composer chat cleanup for chats inactive 30+ days."

@@ -4,13 +4,24 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::adapters;
-use crate::adapters::opencode;
+use crate::adapters::{composer_chat, opencode, vscode};
 use crate::model::Item;
 use crate::util;
 
 pub fn run(delegate: &str, item: &Item, dry_run: bool) -> anyhow::Result<u64> {
     match delegate {
         "claude.project_purge" => claude_purge(item, dry_run),
+        "cursor.chat_session_delete" => {
+            composer_chat_sessions(item, dry_run, "cursor", "Cursor")
+        }
+        "vscode.chat_session_delete" => vscode_chat_sessions(item, dry_run),
+        "windsurf.chat_session_delete" => {
+            composer_chat_sessions(item, dry_run, "windsurf", "Windsurf")
+        }
+        "kiro.chat_session_delete" => composer_chat_sessions(item, dry_run, "kiro", "Kiro"),
+        "antigravity.chat_session_delete" => {
+            composer_chat_sessions(item, dry_run, "antigravity", "Antigravity")
+        }
         "opencode.session_delete" => opencode_sessions(item, dry_run),
         "opencode.snapshot_prune" => prune_paths(item, dry_run),
         "opencode.legacy_guard" => {
@@ -48,6 +59,71 @@ fn claude_purge(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
             anyhow::bail!("claude project purge failed; refusing to delete transcripts manually")
         }
     }
+}
+
+fn composer_chat_sessions(
+    item: &Item,
+    dry_run: bool,
+    tool_id: &str,
+    product: &str,
+) -> anyhow::Result<u64> {
+    if adapters::by_id(tool_id)
+        .map(|a| a.is_running())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("{product} is running");
+    }
+    let bytes = item.bytes;
+    if dry_run {
+        return Ok(bytes);
+    }
+    let db = item.paths.first().ok_or_else(|| {
+        anyhow::anyhow!("{product} chat database path is missing")
+    })?;
+    let ids = composer_chat::stale_session_ids(db)?;
+    if ids.is_empty() {
+        anyhow::bail!("{product} reports no deletable chats in its database");
+    }
+    if adapters::by_id(tool_id)
+        .map(|a| a.is_running())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("{product} started during cleanup; aborting");
+    }
+    composer_chat::delete_stale_sessions(db, product)
+}
+
+fn vscode_chat_sessions(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
+    if adapters::by_id("vscode")
+        .map(|a| a.is_running())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("VS Code is running");
+    }
+    let bytes = item.bytes;
+    if dry_run {
+        return Ok(bytes);
+    }
+    let app_root = vscode_app_root(item).ok_or_else(|| {
+        anyhow::anyhow!("VS Code app root could not be derived from chat paths")
+    })?;
+    if adapters::by_id("vscode")
+        .map(|a| a.is_running())
+        .unwrap_or(false)
+    {
+        anyhow::bail!("VS Code started during cleanup; aborting");
+    }
+    vscode::delete_stale_sessions(&app_root)
+}
+
+fn vscode_app_root(item: &Item) -> Option<std::path::PathBuf> {
+    for path in &item.paths {
+        let text = path.to_string_lossy().replace('\\', "/");
+        if let Some(idx) = text.find("/User/globalStorage") {
+            return Some(std::path::PathBuf::from(&text[..idx]));
+        }
+    }
+    None
 }
 
 fn opencode_sessions(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
