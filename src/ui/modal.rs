@@ -217,14 +217,18 @@ pub fn pick_list(frame: &mut Frame, title: &str, options: &[String], selected: u
 }
 
 pub fn help_overlay(frame: &mut Frame) {
-    // A reference card is scanned, not read top-to-bottom. Split the controls
-    // into two columns so it stays compact even on tall terminals.
-    let area = centered(frame.area(), 78, 14.min(frame.area().height));
+    let viewport = frame.area();
+    // This is a focused command guide, not a small tooltip. Paint the entire
+    // viewport first so dashboard rows cannot compete with the reference card.
+    frame.render_widget(Clear, viewport);
+    frame.render_widget(Block::default().style(theme::canvas()), viewport);
+
+    let area = help_area(viewport);
     opaque_surface(frame, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::CYAN))
-        .title(" shortcuts ")
+        .title(" ◈  SHORTCUTS & COMMAND GUIDE ")
         .title_style(theme::title())
         .title_bottom(
             Line::from(vec![
@@ -233,10 +237,17 @@ pub fn help_overlay(frame: &mut Frame) {
             ])
             .right_aligned(),
         );
-    let inner_w = area.width.saturating_sub(4) as usize;
-    let col_w = inner_w.saturating_sub(2) / 2;
-    let left = vec![
+    let inner_w = area.width.saturating_sub(8) as usize;
+    let col_w = inner_w.saturating_sub(4) / 2;
+    let mut left = vec![
         section("navigate", col_w),
+        Line::from(Span::styled(
+            "Move through the storage map and change its view.",
+            theme::dim(),
+        )),
+        Line::from(""),
+    ];
+    left.extend(spaced_help_rows(vec![
         compact_help_row("↑ ↓", vec![Span::styled("move item", theme::fg())]),
         compact_help_row("← →", vec![Span::styled("switch tool", theme::fg())]),
         compact_help_row(
@@ -257,15 +268,34 @@ pub fn help_overlay(frame: &mut Frame) {
                 Span::styled("All · >7d · >30d · >90d", theme::accent()),
             ],
         ),
+    ]));
+    left.extend([
         Line::from(""),
         section("select", col_w),
+        Line::from(Span::styled(
+            "Build a cleanup set before you act.",
+            theme::dim(),
+        )),
+        Line::from(""),
+    ]);
+    left.extend(spaced_help_rows(vec![
         compact_help_row("space", vec![Span::styled("toggle item", theme::fg())]),
         compact_help_row("enter", vec![Span::styled("show in Finder", theme::fg())]),
-        compact_help_row("a", vec![Span::styled("select allowed", theme::fg())]),
+        compact_help_row(
+            "a",
+            vec![Span::styled("select / deselect allowed", theme::fg())],
+        ),
         compact_help_row("n", vec![Span::styled("clear selection", theme::fg())]),
-    ];
-    let right = vec![
+    ]));
+    let mut right = vec![
         section("act", col_w),
+        Line::from(Span::styled(
+            "Run cleanup, restore a snapshot, or update results.",
+            theme::dim(),
+        )),
+        Line::from(""),
+    ];
+    right.extend(spaced_help_rows(vec![
         compact_help_row("d", vec![Span::styled("clean selection", theme::fg())]),
         compact_help_row("r", vec![Span::styled("restore quarantine", theme::fg())]),
         compact_help_row(
@@ -273,20 +303,56 @@ pub fn help_overlay(frame: &mut Frame) {
             vec![Span::styled("prevention / optimize", theme::fg())],
         ),
         compact_help_row("u", vec![Span::styled("refresh now", theme::fg())]),
+    ]));
+    right.extend([
+        Line::from(""),
+        section("quick help", col_w),
+        Line::from(Span::styled(
+            "Cleanup is recoverable from quarantine when available.",
+            theme::dim(),
+        )),
+        Line::from(""),
+    ]);
+    right.extend(spaced_help_rows(vec![
         compact_help_row("?", vec![Span::styled("this help", theme::fg())]),
         compact_help_row("q esc", vec![Span::styled("quit / close", theme::fg())]),
-    ];
-    let content_h = area.height.saturating_sub(2);
-    let y = area.y + 1;
+    ]));
+    let header = Line::from(vec![
+        Span::styled("AGENTSWEEP", theme::accent().add_modifier(Modifier::BOLD)),
+        Span::styled("  //  LOCAL STORAGE CONTROL SURFACE", theme::dim()),
+    ]);
+    let content_h = area.height.saturating_sub(6);
+    let y = area.y + 5;
     frame.render_widget(block, area);
     frame.render_widget(
+        Paragraph::new(header),
+        Rect::new(area.x + 4, area.y + 2, area.width.saturating_sub(8), 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Keyboard-first controls for inspecting, selecting, and safely reclaiming space.",
+            theme::fg(),
+        ))),
+        Rect::new(area.x + 4, area.y + 3, area.width.saturating_sub(8), 1),
+    );
+    frame.render_widget(
         Paragraph::new(left),
-        Rect::new(area.x + 2, y, col_w as u16, content_h),
+        Rect::new(area.x + 4, y, col_w as u16, content_h),
     );
     frame.render_widget(
         Paragraph::new(right),
-        Rect::new(area.x + 2 + col_w as u16 + 2, y, col_w as u16, content_h),
+        Rect::new(area.x + 4 + col_w as u16 + 4, y, col_w as u16, content_h),
     );
+}
+
+fn help_area(viewport: Rect) -> Rect {
+    let width = viewport.width.saturating_sub(8).clamp(82, 116);
+    let height = viewport.height.saturating_sub(6).clamp(19, 26);
+    centered(
+        viewport,
+        width.min(viewport.width),
+        height.min(viewport.height),
+    )
 }
 
 fn section(name: &'static str, inner_w: usize) -> Line<'static> {
@@ -313,6 +379,20 @@ fn compact_help_row(key: &str, desc: Vec<Span<'static>>) -> Line<'static> {
     ];
     spans.extend(desc);
     Line::from(spans)
+}
+
+/// Keep highlighted keycaps from touching vertically. A single blank terminal
+/// row makes each shortcut read as an individual control instead of a cyan
+/// column, particularly in the two-column guide.
+fn spaced_help_rows(rows: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let mut spaced = Vec::with_capacity(rows.len().saturating_mul(2));
+    for (index, row) in rows.into_iter().enumerate() {
+        if index > 0 {
+            spaced.push(Line::from(""));
+        }
+        spaced.push(row);
+    }
+    spaced
 }
 
 fn meter(progress: f64, width: usize) -> String {
@@ -352,9 +432,9 @@ mod tests {
 
     #[test]
     fn help_groups_keys_and_labels() {
-        let text = render_help(80, 24);
+        let text = render_help(120, 36);
         for needle in [
-            "shortcuts",
+            "SHORTCUTS",
             "navigate",
             "select",
             "act",
@@ -380,7 +460,7 @@ mod tests {
             })
             .unwrap();
 
-        let area = centered(Rect::new(0, 0, 80, 24), 78, 14);
+        let area = help_area(Rect::new(0, 0, 80, 24));
         let buffer = terminal.backend().buffer();
         for y in area.y..area.bottom() {
             for x in area.x..area.right() {

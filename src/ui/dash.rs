@@ -14,7 +14,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Clear, Gauge, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::{DefaultTerminal, Frame};
 
@@ -635,12 +635,27 @@ impl App {
     }
 
     fn select_allowed(&mut self) {
-        for tool in &self.inventory.tools {
-            for item in &tool.items {
-                if self.mode.allows(item.risk) && item.passes_age(self.age) && item.bytes > 0 {
-                    self.selected.insert(item.rule_id.clone());
-                }
+        let applicable: Vec<String> = self
+            .inventory
+            .tools
+            .iter()
+            .flat_map(|tool| tool.items.iter())
+            .filter(|item| {
+                self.mode.allows(item.risk) && item.passes_age(self.age) && item.bytes > 0
+            })
+            .map(|item| item.rule_id.clone())
+            .collect();
+        let all_selected = !applicable.is_empty()
+            && applicable
+                .iter()
+                .all(|rule_id| self.selected.contains(rule_id));
+
+        if all_selected {
+            for rule_id in applicable {
+                self.selected.remove(&rule_id);
             }
+        } else {
+            self.selected.extend(applicable);
         }
         self.refresh_reclaim();
     }
@@ -1241,37 +1256,134 @@ fn draw_scan(frame: &mut Frame, app: &App) {
 
 fn draw_cleaning(frame: &mut Frame, app: &App) {
     let area = frame.area();
+    // This is deliberately a second, local opaque paint rather than relying
+    // on the screen-wide canvas in draw(). During a cleanup the old dashboard
+    // must never remain visible between animation frames, even in terminals
+    // with transparency, image backgrounds, or aggressive diff rendering.
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(theme::canvas()), area);
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" cleaning ")
+        .title(" ◈  CLEANING LOCAL STORAGE ")
         .title_style(theme::title())
-        .border_style(Style::default().fg(theme::GREEN));
+        .border_style(Style::default().fg(theme::GREEN))
+        .title_bottom(
+            Line::from(Span::styled(
+                " cleanup is running safely in the background ",
+                theme::dim(),
+            ))
+            .centered(),
+        );
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
     // Actual work happens on a worker thread and its true completion fraction
-    // isn't known up front, so a static bar would sit still for however long
-    // that takes and read as hung. Drive it off elapsed time instead so a
-    // slow-but-healthy cleanup still visibly moves.
+    // isn't known up front. Instead of a dishonest percentage, show a
+    // containment chamber: debris streams inward while the centre core pulses.
+    // It is terminal-native take on the particle-dispersion effects popular in
+    // Ratatui demos, tuned to AgentSweep's cyan/green system aesthetic.
     let elapsed = app
         .clean_started
         .map(|started| started.elapsed().as_secs_f64())
         .unwrap_or(0.0);
-    let ratio = if app.clean_running {
-        (0.5 - 0.5 * (elapsed * std::f64::consts::PI).cos()).clamp(0.03, 0.97)
-    } else {
-        app.clean_progress.clamp(0.0, 1.0)
-    };
-    let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(theme::GREEN))
-        .ratio(ratio)
-        .label(format!("{}  ({:.0}s)", app.clean_label, elapsed));
-    let row = Rect::new(
-        inner.x + 4,
-        inner.y + inner.height / 2,
-        inner.width.saturating_sub(8),
-        3,
+    let phase = (elapsed * 14.0) as usize;
+    let content_h = inner.height.min(15);
+    let top = inner.y + inner.height.saturating_sub(content_h) / 2;
+    let width = inner.width.saturating_sub(8) as usize;
+    let left = inner.x + inner.width.saturating_sub(width as u16) / 2;
+    let core_width = 19.min(width.saturating_sub(2));
+    let core_start = width.saturating_sub(core_width) / 2;
+
+    if width == 0 || content_h < 7 {
+        return;
+    }
+
+    let status = format!("CONTAINING  {}", trunc(&app.clean_label, 28));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("◌ ", theme::accent().add_modifier(Modifier::BOLD)),
+            Span::styled(status, theme::fg().add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  ·  {:.0}s elapsed", elapsed), theme::dim()),
+        ]))
+        .centered(),
+        Rect::new(inner.x, top, inner.width, 1),
     );
-    frame.render_widget(gauge, row);
+
+    // Five independent lanes converge on the core. They suggest real work
+    // without claiming that any particular item or byte count is complete.
+    let lane_count = content_h.saturating_sub(5).min(7) as usize;
+    for lane in 0..lane_count {
+        let y = top + 2 + lane as u16;
+        let from_left = lane % 2 == 0;
+        let distance = (phase + lane * 11) % core_start.max(1);
+        let particle = if from_left {
+            distance
+        } else {
+            width.saturating_sub(1 + distance)
+        };
+        let mut spans = Vec::with_capacity(width);
+        for x in 0..width {
+            let toward_core = if from_left {
+                x
+            } else {
+                width.saturating_sub(1 + x)
+            };
+            let (glyph, style) = if x >= core_start && x < core_start + core_width {
+                (" ", theme::canvas())
+            } else if x == particle {
+                ("◆", theme::accent().add_modifier(Modifier::BOLD))
+            } else if toward_core < distance && (x + lane + phase / 2) % 5 == 0 {
+                ("·", Style::default().fg(theme::GREEN).bg(theme::BG))
+            } else if toward_core < distance {
+                ("─", Style::default().fg(theme::GREY).bg(theme::BG))
+            } else {
+                (" ", theme::canvas())
+            };
+            spans.push(Span::styled(glyph, style));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect::new(left, y, width as u16, 1),
+        );
+    }
+
+    let pulse = ((elapsed * 5.0).sin() + 1.0) * 0.5;
+    let core = if pulse > 0.72 {
+        "✦"
+    } else if pulse > 0.34 {
+        "◈"
+    } else {
+        "◇"
+    };
+    let core_color = if pulse > 0.55 {
+        theme::GREEN
+    } else {
+        theme::CYAN
+    };
+    let core_y = top + 2 + lane_count as u16 / 2;
+    let core_label = format!("[ {core}  PURGING  {core} ]");
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            core_label,
+            Style::default()
+                .fg(core_color)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .centered(),
+        Rect::new(left + core_start as u16, core_y, core_width as u16, 1),
+    );
+
+    let foot_y = top + content_h.saturating_sub(2);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "INBOUND STREAMS  ·  QUARANTINE WHEN AVAILABLE  ·  DO NOT CLOSE",
+            theme::dim(),
+        )))
+        .centered(),
+        Rect::new(inner.x, foot_y, inner.width, 1),
+    );
 }
 
 fn draw_dash(frame: &mut Frame, app: &App) {
@@ -1352,6 +1464,15 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_tools(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .title(" storage by source ")
+        .title_style(theme::title())
+        .title_bottom(
+            Line::from(Span::styled(
+                " ← → switch source  ·  bars show risk profile ",
+                theme::dim(),
+            ))
+            .right_aligned(),
+        )
         .border_style(Style::default().fg(theme::GREY));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1367,26 +1488,44 @@ fn draw_tools(frame: &mut Frame, app: &App, area: Rect) {
         if y >= inner.y + inner.height {
             break;
         }
-        let marker = if selected { "▶" } else { " " };
-        let running = if tool.running { " ●" } else { "" };
-        let name = format!(
-            "{marker} {:<10} {:>8}{running}",
-            tool.id,
-            util::bytes(tool.total_bytes())
-        );
-        let style = if selected {
-            Style::default()
-                .fg(theme::CYAN)
-                .add_modifier(Modifier::BOLD)
+        let label_width = 36.min(inner.width) as usize;
+        let name_width = label_width.saturating_sub(14);
+        let marker = if selected { "▌ " } else { "  " };
+        let marker_style = if selected {
+            theme::accent().add_modifier(Modifier::BOLD)
+        } else {
+            theme::canvas()
+        };
+        let name_style = if selected {
+            theme::accent().add_modifier(Modifier::BOLD)
         } else {
             theme::fg()
         };
+        let mut spans = vec![
+            Span::styled(marker, marker_style),
+            Span::styled(
+                format!("{:<name_width$}", trunc(&tool.id, name_width)),
+                name_style,
+            ),
+            Span::styled(
+                format!("{:>10}", util::bytes(tool.total_bytes())),
+                theme::fg().add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if tool.running && label_width >= 34 {
+            spans.push(Span::styled(" ● LIVE", Style::default().fg(theme::GREEN)));
+        }
         frame.render_widget(
-            Paragraph::new(Span::styled(name, style)),
-            Rect::new(inner.x + 1, y, 28.min(inner.width), 1),
+            Paragraph::new(Line::from(spans)),
+            Rect::new(inner.x, y, label_width as u16, 1),
         );
-        if inner.width > 32 {
-            let bar_area = Rect::new(inner.x + 30, y, inner.width.saturating_sub(32), 1);
+        if inner.width > label_width as u16 + 2 {
+            let bar_area = Rect::new(
+                inner.x + label_width as u16 + 2,
+                y,
+                inner.width.saturating_sub(label_width as u16 + 2),
+                1,
+            );
             draw_stack_bar(frame, app, bar_area, tool);
         }
     }
@@ -1402,30 +1541,26 @@ fn draw_tools(frame: &mut Frame, app: &App, area: Rect) {
             &mut sb_state,
         );
     }
-    // Legend row pinned to the bottom of the tools panel: bar colors and
-    // live per-risk totals across all tools.
+    // Keep the legend intentionally terse: the dashboard header owns the
+    // aggregate size, while this row simply makes the bar colors legible.
     if inner.height >= 5 {
         let ly = inner.y + inner.height - 1;
         let legend = |risk: Risk, name: &'static str| {
             vec![
-                Span::styled(" ■ ", Style::default().fg(theme::risk_color(risk))),
-                Span::styled(name, theme::dim()),
-                Span::styled(
-                    format!(" {}", util::bytes(app.inventory.bytes_by_risk(risk))),
-                    theme::fg(),
-                ),
-                Span::raw("   "),
+                Span::styled(" ● ", Style::default().fg(theme::risk_color(risk))),
+                Span::styled(name, theme::dim().add_modifier(Modifier::BOLD)),
+                Span::raw("  "),
             ]
         };
-        let mut spans = vec![Span::raw(" ")];
+        let mut spans = vec![Span::styled(" RISK  ", theme::dim())];
         spans.extend(legend(Risk::Safe, "safe"));
         spans.extend(legend(Risk::Review, "review"));
-        spans.extend(legend(Risk::Userdata, "user"));
-        spans.extend(legend(Risk::Critical, "locked"));
-        spans.extend(legend(Risk::Unknown, "unknown"));
+        spans.extend(legend(Risk::Userdata, "data"));
+        spans.extend(legend(Risk::Critical, "protected"));
+        spans.extend(legend(Risk::Unknown, "other"));
         frame.render_widget(
             Paragraph::new(Line::from(spans)),
-            Rect::new(inner.x + 1, ly, inner.width.saturating_sub(2), 1),
+            Rect::new(inner.x, ly, inner.width, 1),
         );
     }
 }
@@ -1449,7 +1584,7 @@ fn draw_stack_bar(frame: &mut Frame, _app: &App, area: Rect, tool: &crate::model
         }
         used += w;
         if w > 0 {
-            spans.push(Span::styled("▀".repeat(w), Style::default().fg(*color)));
+            spans.push(Span::styled("█".repeat(w), Style::default().fg(*color)));
         }
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1773,7 +1908,8 @@ mod dash_tests {
             text.contains("Deletes old plan-mode files."),
             "detail pane shows the full consequence"
         );
-        for word in ["safe", "review", "user", "locked", "unknown"] {
+        assert!(text.contains("storage by source"));
+        for word in ["safe", "review", "data", "protected", "other"] {
             assert!(text.contains(word), "legend shows {word}");
         }
         assert!(text.contains("reclaimable"), "footer renders");
@@ -1799,6 +1935,33 @@ mod dash_tests {
                 .iter()
                 .all(|cell| cell.bg != Color::Reset),
             "every cell needs an explicit background so terminal transparency cannot show through"
+        );
+    }
+
+    #[test]
+    fn cleaning_chamber_replaces_the_previous_dashboard_frame() {
+        let mut app = test_app();
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        app.screen = Screen::Cleaning;
+        app.clean_running = true;
+        app.clean_started = Some(Instant::now() - Duration::from_secs(3));
+        app.clean_label = "Temporary files".into();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("CLEANING LOCAL STORAGE"));
+        assert!(text.contains("PURGING"));
+        assert!(
+            !text.contains("Old plan files"),
+            "a cleaning frame must erase dashboard labels before drawing its animation"
+        );
+        assert!(
+            buffer.content().iter().all(|cell| cell.bg != Color::Reset),
+            "the cleaning chamber must stay opaque in transparent terminals"
         );
     }
 
@@ -1888,6 +2051,19 @@ mod dash_tests {
             !app.anims_settled(),
             "fresh selection must keep frames flowing"
         );
+    }
+
+    #[test]
+    fn select_allowed_toggles_currently_applicable_items() {
+        let mut app = test_app();
+
+        app.select_allowed();
+        assert!(app.selected.contains("claude.plans"));
+        assert_eq!(app.anim_reclaim.target(), 143_360.0);
+
+        app.select_allowed();
+        assert!(app.selected.is_empty());
+        assert_eq!(app.anim_reclaim.target(), 0.0);
     }
 
     #[test]
