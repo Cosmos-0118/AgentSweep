@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -62,18 +63,20 @@ fn opencode_sessions(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
     if dry_run {
         return Ok(bytes);
     }
-    let ids = session_ids_from_cli().or_else(|_| {
-        let db = item.paths.first().cloned().unwrap_or_default();
-        opencode::list_session_ids(&db)
-    })?;
+    let db = item
+        .paths
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("OpenCode session database path is missing"))?;
+    // The dashboard's count comes from this database. Do not trust the CLI's
+    // formatted list here: it can fail independently or omit rows. The query
+    // also applies the 30-day inactivity policy shown in the UI.
+    let ids = opencode::stale_session_ids(db)?;
+    if ids.is_empty() {
+        anyhow::bail!("OpenCode reports no deletable sessions in its database");
+    }
+    let bytes_before = util::disk_usage(db);
     for id in &ids {
-        let status = Command::new("opencode")
-            .args(["session", "delete", id])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if !status.map(|s| s.success()).unwrap_or(false) {
+        if adapters::capture("opencode", &["session", "delete", id]).is_none() {
             anyhow::bail!("opencode session delete failed for {id}");
         }
     }
@@ -83,28 +86,27 @@ fn opencode_sessions(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
     {
         anyhow::bail!("OpenCode started during cleanup; aborting VACUUM");
     }
-    if let Some(db) = item.paths.first() {
-        opencode::vacuum_db(db)?;
+    // Verify against the complete session table. A session that remains but is
+    // touched during cleanup is no longer stale, but it was still not deleted.
+    let remaining = opencode::list_session_ids(db)?;
+    let undeleted = requested_ids_still_present(&ids, &remaining);
+    if !undeleted.is_empty() {
+        anyhow::bail!(
+            "OpenCode kept {} requested session(s); refusing to report cleanup as successful",
+            undeleted.len()
+        );
     }
-    Ok(bytes)
+    opencode::vacuum_db(db)?;
+    Ok(bytes_before.saturating_sub(util::disk_usage(db)))
 }
 
-fn session_ids_from_cli() -> anyhow::Result<Vec<String>> {
-    let stdout = adapters::capture("opencode", &["session", "list"])
-        .ok_or_else(|| anyhow::anyhow!("opencode session list failed"))?;
-    let mut ids = Vec::new();
-    for line in stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("session") || line.starts_with("ID") {
-            continue;
-        }
-        if let Some(id) = line.split_whitespace().next() {
-            if id.len() >= 6 {
-                ids.push(id.to_string());
-            }
-        }
-    }
-    Ok(ids)
+fn requested_ids_still_present(requested: &[String], remaining: &[String]) -> Vec<String> {
+    let remaining: HashSet<_> = remaining.iter().collect();
+    requested
+        .iter()
+        .filter(|id| remaining.contains(id))
+        .cloned()
+        .collect()
 }
 
 fn prune_paths(item: &Item, dry_run: bool) -> anyhow::Result<u64> {
@@ -154,4 +156,25 @@ pub fn vacuum_copy_check(src: &Path) -> anyhow::Result<u64> {
     let after = util::disk_usage(&dest);
     let _ = fs::remove_dir_all(&dir);
     Ok(before.saturating_sub(after))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_cleanup_requires_every_requested_id_to_disappear() {
+        let requested = vec!["ses-a".into(), "ses-b".into()];
+        assert_eq!(
+            requested_ids_still_present(&requested, &["ses-b".into(), "ses-c".into()]),
+            vec!["ses-b"]
+        );
+        assert!(requested_ids_still_present(&requested, &[]).is_empty());
+        // A requested session that became recent still exists and therefore
+        // must fail verification; age is irrelevant after deletion starts.
+        assert_eq!(
+            requested_ids_still_present(&requested, &["ses-a".into()]),
+            vec!["ses-a"]
+        );
+    }
 }

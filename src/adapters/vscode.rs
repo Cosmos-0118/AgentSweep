@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use super::{app_support, capture, fallback_home, process_running, Adapter};
+use super::{app_support, capture, fallback_home, find_vscode_processes, Adapter};
 
 pub struct VsCode;
 
@@ -27,6 +27,10 @@ impl Adapter for VsCode {
     }
 
     fn is_running(&self) -> bool {
-        process_running(&["code"])
+        !find_vscode_processes().is_empty()
+    }
+
+    fn running_processes(&self) -> Vec<String> {
+        find_vscode_processes()
     }
 }

@@ -9,6 +9,8 @@ use super::{capture, fallback_home, process_running, Adapter};
 use crate::model::{Item, Risk};
 use crate::util;
 
+pub const SESSION_RETENTION_DAYS: i64 = 30;
+
 static PATHS: OnceLock<Option<BTreeMap<String, PathBuf>>> = OnceLock::new();
 static OCODE_VERSION: OnceLock<Option<String>> = OnceLock::new();
 
@@ -166,15 +168,21 @@ fn session_stats(db: &Path) -> anyhow::Result<SessionStats> {
     )?;
     let tables = table_names(&conn)?;
     let session_table = pick_table(&tables, &["session", "sessions"]);
-    let count: usize = if let Some(table) = session_table {
-        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| {
-            r.get::<_, i64>(0)
-        })
-        .map(|n| n.max(0) as usize)
-        .unwrap_or(0)
-    } else {
-        0
+    let Some(table) = session_table else {
+        return Ok(SessionStats {
+            count: 0,
+            oldest_days: 0,
+            reclaimable: 0,
+        });
     };
+    let sessions = stale_sessions(&conn, table)?;
+    let count = sessions.len();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let oldest_days = sessions
+        .iter()
+        .map(|(_, updated)| ((now_ms - *updated).max(0) / 86_400_000) as u32)
+        .max()
+        .unwrap_or(0);
     let page_count: u64 = conn
         .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
         .unwrap_or(0) as u64;
@@ -189,9 +197,28 @@ fn session_stats(db: &Path) -> anyhow::Result<SessionStats> {
         .saturating_mul(page_size);
     Ok(SessionStats {
         count,
-        oldest_days: 0,
+        oldest_days,
         reclaimable: used.max(util::disk_usage(db)),
     })
+}
+
+fn stale_sessions(conn: &Connection, table: &str) -> anyhow::Result<Vec<(String, i64)>> {
+    let columns = column_names(conn, table)?;
+    if !columns.iter().any(|column| column == "id")
+        || !columns.iter().any(|column| column == "time_updated")
+    {
+        anyhow::bail!("OpenCode session table has no id/time_updated columns")
+    }
+    let cutoff = chrono::Utc::now().timestamp_millis() - SESSION_RETENTION_DAYS * 86_400_000;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, time_updated FROM {table} WHERE time_updated <= ? ORDER BY time_updated"
+    ))?;
+    let sessions = stmt
+        .query_map([cutoff], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(sessions)
 }
 
 fn db_session_ids(db: &Path) -> anyhow::Result<Vec<String>> {
@@ -218,8 +245,7 @@ fn db_session_ids(db: &Path) -> anyhow::Result<Vec<String>> {
     let mut stmt = conn.prepare(&format!("SELECT {id_col} FROM {table}"))?;
     let ids = stmt
         .query_map([], |r| r.get::<_, String>(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(ids)
 }
 
@@ -276,6 +302,27 @@ pub fn list_session_ids(db: &Path) -> anyhow::Result<Vec<String>> {
     db_session_ids(db)
 }
 
+/// Session IDs eligible for cleanup: inactive for at least 30 days. This is
+/// deliberately stricter than the broad database list used for legacy checks.
+pub fn stale_session_ids(db: &Path) -> anyhow::Result<Vec<String>> {
+    if !db.exists() {
+        return Ok(vec![]);
+    }
+    let uri = format!("file:{}?mode=ro", db.display());
+    let conn = Connection::open_with_flags(
+        &uri,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    let tables = table_names(&conn)?;
+    let Some(table) = pick_table(&tables, &["session", "sessions"]) else {
+        return Ok(vec![]);
+    };
+    Ok(stale_sessions(&conn, table)?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect())
+}
+
 pub fn vacuum_db(db: &Path) -> anyhow::Result<()> {
     let conn = Connection::open(db)?;
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
@@ -300,4 +347,36 @@ pub fn storage_unmatched(data: &Path) -> bool {
 #[allow(dead_code)]
 fn _fs_exists_hint(path: &Path) -> bool {
     fs::metadata(path).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_session_query_excludes_recent_sessions() {
+        let db =
+            std::env::temp_dir().join(format!("agentsweep-opencode-{}.db", std::process::id()));
+        let _ = fs::remove_file(&db);
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, time_updated INTEGER NOT NULL);",
+        )
+        .unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO session (id, time_updated) VALUES (?1, ?2)",
+            ("ses-old", now - (SESSION_RETENTION_DAYS + 1) * 86_400_000),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session (id, time_updated) VALUES (?1, ?2)",
+            ("ses-recent", now - 86_400_000),
+        )
+        .unwrap();
+        drop(conn);
+
+        assert_eq!(stale_session_ids(&db).unwrap(), vec!["ses-old"]);
+        fs::remove_file(db).unwrap();
+    }
 }

@@ -26,7 +26,7 @@ pub fn assert_stopped(items: &[Item]) -> anyhow::Result<()> {
     let mut detail = Vec::new();
     for id in &blockers {
         if let Some(a) = adapters::by_id(id) {
-            for proc in adapters::find_running(&[a.id()]) {
+            for proc in a.running_processes() {
                 detail.push(proc);
             }
         }

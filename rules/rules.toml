@@ -332,11 +332,11 @@ consequence = "Deletes /undo /redo filesystem rollback history. Conversations st
 id = "opencode.sessions"
 tool = "opencode"
 root = "data"
-label = "Old sessions"
+label = "Sessions inactive >=30d"
 paths = []
 risk = "userdata"
 delegate = "opencode.session_delete"
-consequence = "Deletes selected sessions through OpenCode's own command, then vacuums the database. Auth and config stay."
+consequence = "Permanently deletes only sessions inactive for 30+ days through OpenCode's own command, then vacuums the database. This cannot be restored from quarantine. Auth and config stay."
 
 [[rule]]
 id = "opencode.auth"

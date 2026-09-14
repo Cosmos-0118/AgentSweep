@@ -56,7 +56,9 @@ impl Adapter for Codex {
     }
 
     fn is_running(&self) -> bool {
-        if let Some(json) = doctor_json() {
+        // Storage locations and version can be cached, but process state must
+        // be read live: the dashboard refreshes while it remains open.
+        if let Some(json) = doctor_json_fresh() {
             if let Some(status) = json
                 .pointer("/checks/app_server.status/details/status")
                 .and_then(|v| v.as_str())
@@ -71,15 +73,15 @@ impl Adapter for Codex {
 }
 
 fn doctor_json() -> Option<Value> {
-    DOCTOR
-        .get_or_init(|| {
-            let stdout = capture("codex", &["doctor", "--json"])?;
-            let trimmed = stdout
-                .lines()
-                .skip_while(|l| !l.trim_start().starts_with('{'))
-                .collect::<Vec<_>>()
-                .join("\n");
-            serde_json::from_str(&trimmed).ok()
-        })
-        .clone()
+    DOCTOR.get_or_init(doctor_json_fresh).clone()
+}
+
+fn doctor_json_fresh() -> Option<Value> {
+    let stdout = capture("codex", &["doctor", "--json"])?;
+    let trimmed = stdout
+        .lines()
+        .skip_while(|line| !line.trim_start().starts_with('{'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    serde_json::from_str(&trimmed).ok()
 }

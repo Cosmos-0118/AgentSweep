@@ -56,9 +56,18 @@ pub fn confirm_modal(frame: &mut Frame, items: &[Item], progress: f64, userdata:
             Style::default().fg(theme::ORANGE),
         )));
     }
+    let delegated = items.iter().any(|item| item.delegate.is_some());
     lines.push(Line::from(Span::styled(
-        "✓  recoverable from quarantine for 7 days",
-        Style::default().fg(theme::GREEN),
+        if delegated {
+            "✗  delegated cleanup is permanent; it cannot be restored"
+        } else {
+            "✓  recoverable from quarantine for 7 days"
+        },
+        Style::default().fg(if delegated {
+            theme::ORANGE
+        } else {
+            theme::GREEN
+        }),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
@@ -263,6 +272,7 @@ pub fn help_overlay(frame: &mut Frame) {
             "p",
             vec![Span::styled("prevention / optimize", theme::fg())],
         ),
+        compact_help_row("u", vec![Span::styled("refresh now", theme::fg())]),
         compact_help_row("?", vec![Span::styled("this help", theme::fg())]),
         compact_help_row("q esc", vec![Span::styled("quit / close", theme::fg())]),
     ];
@@ -322,8 +332,10 @@ fn truncate(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Item, Risk};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use std::path::PathBuf;
 
     fn render_help(w: u16, h: u16) -> String {
         let backend = TestBackend::new(w, h);
@@ -379,5 +391,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn delegated_cleanup_is_not_presented_as_recoverable() {
+        let item = Item {
+            rule_id: "opencode.sessions".into(),
+            tool: "opencode".into(),
+            label: "Sessions inactive >30d".into(),
+            paths: vec![PathBuf::from("/tmp/opencode.db")],
+            bytes: 1,
+            risk: Risk::Userdata,
+            requires_stopped: true,
+            consequence: "permanent".into(),
+            oldest_mtime: None,
+            newest_mtime: None,
+            delegate: Some("opencode.session_delete".into()),
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| confirm_modal(frame, &[item], 0.0, true))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("permanent"));
+        assert!(!text.contains("recoverable from quarantine"));
     }
 }

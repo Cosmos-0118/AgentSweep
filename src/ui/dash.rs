@@ -33,6 +33,8 @@ const LOGO: [&str; 3] = [
     "█▀█ █▄█ ██▄ █░▀█ ░█░ ▄█ ▀▄▀▄▀ ██▄ ██▄ █▀▀",
     "      understand · control · reclaim     ",
 ];
+const REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+const FADE_DURATION: Duration = Duration::from_millis(650);
 
 #[derive(Clone)]
 /// Top-level screens. Modal states (confirm, refused, help, restore,
@@ -42,6 +44,8 @@ enum Screen {
     Boot,
     Scan,
     Dash,
+    Fading,
+    Reconciling,
     Cleaning,
 }
 
@@ -83,6 +87,11 @@ struct App {
     should_quit: bool,
     clean_progress: f64,
     clean_label: String,
+    refresh_in_flight: bool,
+    refresh_pending: bool,
+    next_refresh: Instant,
+    pending_clean: Option<Vec<Item>>,
+    fade_started: Option<Instant>,
 }
 
 struct Notice {
@@ -121,6 +130,11 @@ impl App {
             should_quit: false,
             clean_progress: 0.0,
             clean_label: String::new(),
+            refresh_in_flight: false,
+            refresh_pending: false,
+            next_refresh: Instant::now(),
+            pending_clean: None,
+            fade_started: None,
         }
     }
 
@@ -206,6 +220,60 @@ impl App {
         self.anim_reclaim.set(r as f64);
     }
 
+    /// Replace the view only after a successful scan, while preserving
+    /// navigation and removing selections whose backing item is gone.
+    fn apply_inventory(&mut self, inventory: Inventory) {
+        let tool_id = self.current_tool_id().to_string();
+        let item_id = self
+            .current_items()
+            .get(self.selected_item)
+            .map(|item| item.rule_id.clone());
+        self.inventory = inventory;
+        self.selected.retain(|id| {
+            self.inventory
+                .tools
+                .iter()
+                .flat_map(|tool| tool.items.iter())
+                .any(|item| item.rule_id == *id && self.mode.allows(item.risk))
+        });
+        let visible = self.visible_tools();
+        self.selected_tool = visible
+            .iter()
+            .position(|&index| self.inventory.tools[index].id == tool_id)
+            .unwrap_or(0);
+        let items = self.current_items();
+        self.selected_item = item_id
+            .as_ref()
+            .and_then(|id| items.iter().position(|item| item.rule_id == *id))
+            .unwrap_or(0)
+            .min(items.len().saturating_sub(1));
+        self.retarget_anims();
+    }
+
+    fn request_refresh(&mut self) {
+        self.refresh_pending = true;
+    }
+
+    fn refresh_due(&self, now: Instant) -> bool {
+        matches!(self.screen, Screen::Dash | Screen::Reconciling)
+            && matches!(self.overlay, Overlay::None)
+            && !self.refresh_in_flight
+            && (self.refresh_pending || now >= self.next_refresh)
+    }
+
+    fn fade_progress(&self) -> Option<f64> {
+        self.fade_started.map(|started| {
+            (started.elapsed().as_secs_f64() / FADE_DURATION.as_secs_f64()).clamp(0.0, 1.0)
+        })
+    }
+
+    fn begin_fade(&mut self, items: Vec<Item>) {
+        self.overlay = Overlay::None;
+        self.pending_clean = Some(items);
+        self.fade_started = Some(Instant::now());
+        self.screen = Screen::Fading;
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
         if matches!(self.overlay, Overlay::Confirm) {
             self.handle_confirm_key(key);
@@ -240,7 +308,19 @@ impl App {
             Overlay::None | Overlay::Confirm => {}
         }
 
-        if matches!(self.screen, Screen::Boot | Screen::Scan | Screen::Cleaning) {
+        if matches!(
+            self.screen,
+            Screen::Boot | Screen::Scan | Screen::Fading | Screen::Reconciling | Screen::Cleaning
+        ) {
+            if matches!(self.screen, Screen::Fading)
+                && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+            {
+                self.pending_clean = None;
+                self.fade_started = None;
+                self.screen = Screen::Dash;
+                self.status = "Cleanup cancelled.".into();
+                return;
+            }
             if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
                 self.should_quit = true;
             }
@@ -290,6 +370,7 @@ impl App {
                 self.picking_choice = false;
                 self.overlay = Overlay::Optimize;
             }
+            KeyCode::Char('u') => self.request_refresh(),
             _ => {}
         }
     }
@@ -330,7 +411,7 @@ impl App {
                         Err(e) => self.status = format!("Restore failed: {e}"),
                     }
                     self.overlay = Overlay::None;
-                    self.rescan();
+                    self.request_refresh();
                 }
             }
             _ => {}
@@ -528,11 +609,12 @@ impl App {
             self.hold = HoldGate::new(Duration::from_secs_f64(secs));
             self.overlay = Overlay::Confirm;
         } else {
-            self.run_clean(items);
+            self.begin_fade(items);
         }
     }
 
     fn run_clean(&mut self, items: Vec<Item>) {
+        self.fade_started = None;
         self.overlay = Overlay::None;
         self.screen = Screen::Cleaning;
         self.clean_progress = 0.0;
@@ -540,27 +622,31 @@ impl App {
         match CleanPlan::try_new(items, self.mode, false) {
             Ok(plan) => match execute::execute(&plan) {
                 Ok(report) => {
-                    self.status = format!("Reclaimed {}.", util::bytes(report.bytes));
+                    self.status = if report.skipped.is_empty() {
+                        format!("Reclaimed {}.", util::bytes(report.bytes))
+                    } else {
+                        format!(
+                            "Cleanup incomplete: {}. Refreshing actual state.",
+                            report.skipped.join("; ")
+                        )
+                    };
                     self.selected.clear();
                     self.clean_progress = 1.0;
-                    self.rescan();
-                    self.screen = Screen::Dash;
+                    self.request_refresh();
+                    self.screen = Screen::Reconciling;
                 }
                 Err(e) => {
                     self.status = format!("Clean failed: {e}");
-                    self.screen = Screen::Dash;
+                    // Earlier paths may have changed before this error. Read
+                    // the filesystem again instead of trusting the old rows.
+                    self.request_refresh();
+                    self.screen = Screen::Reconciling;
                 }
             },
             Err(_) => {
+                self.pending_clean = None;
                 self.screen = Screen::Dash;
             }
-        }
-    }
-
-    fn rescan(&mut self) {
-        if let Ok(inv) = scan::inventory(None) {
-            self.inventory = inv;
-            self.retarget_anims();
         }
     }
 
@@ -574,7 +660,16 @@ impl App {
             && self.hold.tick(now, Duration::from_secs_f64(dt)) == HoldState::Confirmed
         {
             let items = self.selected_items();
-            self.run_clean(items);
+            self.begin_fade(items);
+        }
+        if matches!(self.screen, Screen::Fading)
+            && self
+                .fade_started
+                .is_some_and(|started| now.duration_since(started) >= FADE_DURATION)
+        {
+            if let Some(items) = self.pending_clean.clone() {
+                self.run_clean(items);
+            }
         }
         self.anim_total.tick(dt);
         self.anim_reclaim.tick(dt);
@@ -609,26 +704,57 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         stdout(),
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
     );
-    let (tx, rx) = mpsc::channel::<Inventory>();
-    thread::spawn(move || {
-        if let Ok(inv) = scan::inventory(None) {
-            let _ = tx.send(inv);
-        }
-    });
+    let (tx, rx) = mpsc::channel::<anyhow::Result<Inventory>>();
+    start_refresh(&mut app, &tx);
 
     let mut last = Instant::now();
     loop {
-        if let Ok(inv) = rx.try_recv() {
-            app.inventory = inv;
-            app.scan_done = true;
-            app.retarget_anims();
+        let mut redraw = false;
+        // A confirmation is a snapshot of exactly what the user reviewed.
+        // Leave a completed scan queued until it is dismissed or acted on.
+        if !matches!(app.overlay, Overlay::Confirm) {
+            if let Ok(result) = rx.try_recv() {
+                redraw = true;
+                app.refresh_in_flight = false;
+                app.next_refresh = Instant::now() + REFRESH_INTERVAL;
+                // A cleanup or manual refresh asked for newer data while this
+                // worker was running. Never briefly apply its stale snapshot.
+                if !app.refresh_pending {
+                    match result {
+                        Ok(inv) => {
+                            if app.status.starts_with("Refresh failed;") {
+                                app.status.clear();
+                            }
+                            app.apply_inventory(inv);
+                            app.pending_clean = None;
+                            if matches!(app.screen, Screen::Reconciling) {
+                                app.screen = Screen::Dash;
+                            }
+                            app.scan_done = true;
+                        }
+                        Err(error) => {
+                            // Do not hide data merely because a background scan hit a
+                            // temporary error; the next interval will retry.
+                            app.status =
+                                format!("Refresh failed; keeping last verified view: {error}");
+                            app.pending_clean = None;
+                            if matches!(app.screen, Screen::Reconciling) {
+                                app.screen = Screen::Dash;
+                            }
+                            // The first scan must still leave the loading screen; an
+                            // empty-but-explicitly-stale dashboard is recoverable.
+                            app.scan_done = true;
+                        }
+                    }
+                }
+            }
         }
         // Idle throttle: once animations settle on the dashboard with no
         // overlay open, stop redrawing at 60fps and wait for input instead.
         let idle = matches!(app.screen, Screen::Dash)
             && matches!(app.overlay, Overlay::None)
             && app.anims_settled();
-        if !idle {
+        if !idle || redraw {
             terminal.draw(|f| draw(f, &app))?;
         }
         let timeout = if idle {
@@ -646,11 +772,28 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         let dt = now.duration_since(last).as_secs_f64().min(0.05);
         last = now;
         app.tick(dt, now);
+        if app.refresh_due(now) {
+            start_refresh(&mut app, &tx);
+        }
         if app.should_quit {
             break;
         }
     }
     Ok(())
+}
+
+/// Full storage scans can walk large caches. Keep at most one in flight so a
+/// periodic update and a post-cleanup reconciliation never compete for disk.
+fn start_refresh(app: &mut App, tx: &mpsc::Sender<anyhow::Result<Inventory>>) {
+    if app.refresh_in_flight {
+        return;
+    }
+    app.refresh_in_flight = true;
+    app.refresh_pending = false;
+    let tx = tx.clone();
+    thread::spawn(move || {
+        let _ = tx.send(scan::inventory(None));
+    });
 }
 
 fn draw(frame: &mut Frame, app: &App) {
@@ -1164,7 +1307,21 @@ fn scroll_start(selected: usize, total: usize, visible: usize) -> usize {
 }
 
 fn draw_items(frame: &mut Frame, app: &App, area: Rect) {
-    let items = app.current_items();
+    let pending_ids: HashSet<&str> = if matches!(app.screen, Screen::Reconciling) {
+        app.pending_clean
+            .as_ref()
+            .map(|items| items.iter().map(|item| item.rule_id.as_str()).collect())
+            .unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
+    // Once the dissolve completes, remove finished rows from layout at once.
+    // The remaining rows compact into place while reconciliation runs.
+    let items: Vec<&Item> = app
+        .current_items()
+        .into_iter()
+        .filter(|item| !pending_ids.contains(item.rule_id.as_str()))
+        .collect();
     let visible_rows = area.height.saturating_sub(2) as usize;
     let start = scroll_start(app.selected_item, items.len(), visible_rows);
     let title = if items.len() > visible_rows {
@@ -1203,7 +1360,12 @@ fn draw_items(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             "○ "
         };
-        let hl = i == app.selected_item;
+        let fading = app
+            .pending_clean
+            .as_ref()
+            .is_some_and(|items| items.iter().any(|pending| pending.rule_id == item.rule_id));
+        let fade = app.fade_progress().filter(|_| fading);
+        let hl = i == app.selected_item && fade.is_none();
         let mut style = if item.risk.locked() {
             theme::dim()
         } else {
@@ -1219,6 +1381,9 @@ fn draw_items(frame: &mut Frame, app: &App, area: Rect) {
             item.risk.label(),
             trunc(&item.consequence, inner.width.saturating_sub(52) as usize)
         );
+        let line = fade
+            .map(|progress| digital_fade(&line, progress, i))
+            .unwrap_or(line);
         let x = if hl && shake_off != 0 {
             inner.x.saturating_add_signed(shake_off.max(0))
         } else {
@@ -1237,6 +1402,32 @@ fn draw_items(frame: &mut Frame, app: &App, area: Rect) {
             .style(Style::default().fg(theme::GREY));
         frame.render_stateful_widget(scrollbar, area, &mut sb_state);
     }
+}
+
+/// A deterministic dissolve reads as intentional rather than visual noise.
+/// Each character turns into a terminal-era block before the final fifth of
+/// the transition, when the whole row is guaranteed blank.
+fn digital_fade(text: &str, progress: f64, row: usize) -> String {
+    if progress >= 0.8 {
+        return " ".repeat(text.chars().count());
+    }
+    let dissolve = (progress / 0.8).clamp(0.0, 1.0);
+    text.chars()
+        .enumerate()
+        .map(|(column, ch)| {
+            if ch == ' ' {
+                return ch;
+            }
+            let signal = ((column * 37 + row * 17) % 101) as f64 / 100.0;
+            if signal >= dissolve {
+                ch
+            } else if (column + row) % 3 == 0 {
+                '░'
+            } else {
+                '·'
+            }
+        })
+        .collect()
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
@@ -1478,6 +1669,48 @@ mod dash_tests {
             !app.anims_settled(),
             "fresh selection must keep frames flowing"
         );
+    }
+
+    #[test]
+    fn digital_fade_replaces_visible_characters_with_retro_blocks() {
+        let faded = digital_fade("selected cache row", 0.7, 3);
+        assert_ne!(faded, "selected cache row");
+        assert!(faded.contains('░') || faded.contains('·'));
+        assert_eq!(digital_fade("selected cache row", 0.8, 3), " ".repeat(18));
+        assert_eq!(digital_fade("abc", 0.0, 0), "abc");
+    }
+
+    #[test]
+    fn escape_cancels_the_pre_cleanup_fade() {
+        let mut app = test_app();
+        app.begin_fade(app.selected_items());
+
+        app.handle_key(KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(matches!(app.screen, Screen::Dash));
+        assert!(app.pending_clean.is_none());
+        assert_eq!(app.status, "Cleanup cancelled.");
+    }
+
+    #[test]
+    fn inventory_refresh_reconciles_selection_without_losing_navigation() {
+        let mut app = test_app();
+        app.selected.insert("claude.plans".into());
+        let mut refreshed = app.inventory.clone();
+        refreshed.tools[0].items[0].bytes = 8192;
+
+        app.apply_inventory(refreshed.clone());
+        assert!(app.selected.contains("claude.plans"));
+        assert_eq!(app.current_tool_id(), "claude");
+        assert_eq!(app.current_items()[0].bytes, 8192);
+
+        refreshed.tools[0].items.clear();
+        app.apply_inventory(refreshed);
+        assert!(app.selected.is_empty(), "gone items cannot stay selected");
+        assert_eq!(app.selected_item, 0, "selection is clamped after refresh");
     }
 
     #[test]
