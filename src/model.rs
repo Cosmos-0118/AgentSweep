@@ -313,7 +313,11 @@ mod tests {
         }
     }
 
-    fn inventory_with(bytes: u64, mtime: Option<std::time::SystemTime>, running: bool) -> Inventory {
+    fn inventory_with(
+        bytes: u64,
+        mtime: Option<std::time::SystemTime>,
+        running: bool,
+    ) -> Inventory {
         let mut i = item(Risk::Safe);
         i.bytes = bytes;
         i.newest_mtime = mtime;

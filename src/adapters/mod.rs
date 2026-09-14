@@ -59,7 +59,10 @@ pub fn by_id(id: &str) -> Option<Box<dyn Adapter>> {
 /// Poll a child until it exits or `timeout` elapses, killing it on timeout so
 /// a hung CLI can never block the caller (and, transitively, the UI thread)
 /// indefinitely.
-fn wait_timeout(child: &mut std::process::Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+fn wait_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {

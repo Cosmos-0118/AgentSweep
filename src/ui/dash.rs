@@ -901,7 +901,9 @@ fn run_app(terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
                         app.refresh_in_flight = false;
                         app.refresh_handle = None;
                         if !app.refresh_pending {
-                            app.status = "Refresh failed; keeping last verified view: scan worker crashed.".into();
+                            app.status =
+                                "Refresh failed; keeping last verified view: scan worker crashed."
+                                    .into();
                             app.refresh_interval = app.next_refresh_interval(true);
                             if !matches!(app.screen, Screen::Fading) {
                                 app.pending_clean = None;

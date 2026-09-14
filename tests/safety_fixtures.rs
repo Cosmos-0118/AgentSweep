@@ -131,7 +131,10 @@ fn manifest_on_disk_accounts_for_every_item_quarantined_so_far() {
     let manifest_path = util::quarantine_root().join(&id).join("manifest.json");
     let raw = fs::read_to_string(&manifest_path).unwrap();
     assert!(raw.contains("\"f.a\""), "manifest must list the first item");
-    assert!(raw.contains("\"f.b\""), "manifest must list the second item");
+    assert!(
+        raw.contains("\"f.b\""),
+        "manifest must list the second item"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
