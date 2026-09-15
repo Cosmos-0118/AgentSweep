@@ -322,6 +322,15 @@ requires_stopped = true
 consequence = "Deletes Claude-generated cache files. Regenerated automatically."
 
 [[rule]]
+id = "claude.home.identity"
+tool = "claude"
+root = "home"
+label = "Local machine state"
+paths = [".claude.json"]
+risk = "critical"
+consequence = "~/.claude/.claude.json holds this machine's device ID and feature-migration flags (separate from ~/.claude.json). Never deleted."
+
+[[rule]]
 id = "claude.dotfile"
 tool = "claude"
 root = "dotfile"
@@ -385,6 +394,15 @@ paths = ["service.json"]
 risk = "safe"
 requires_stopped = true
 consequence = "Deletes the stopped-service registration file."
+
+[[rule]]
+id = "opencode.prompt_history"
+tool = "opencode"
+root = "state"
+label = "Prompt history"
+paths = ["prompt-history.jsonl"]
+risk = "userdata"
+consequence = "Deletes typed prompt history. Up/down recall is gone. Session transcripts stay."
 
 [[rule]]
 id = "opencode.repos"
@@ -543,7 +561,7 @@ id = "claude.desktop.cache"
 tool = "claude"
 root = "desktop"
 label = "Desktop app caches"
-paths = ["Cache", "Code Cache", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm"]
+paths = ["Cache", "Code Cache", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Shared Dictionary", "Trust Tokens", "Trust Tokens-journal", "DIPS", "DIPS-wal", "DIPS-shm", "blob_storage"]
 risk = "safe"
 requires_stopped = true
 consequence = "Standard Chromium render/compile caches used by the Claude desktop app. Regenerated automatically."
@@ -715,10 +733,10 @@ id = "vscode.app.cache"
 tool = "vscode"
 root = "app"
 label = "Render and compile caches"
-paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "Trust Tokens-journal", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "CachedConfigurations", "blob_storage", "logs"]
 risk = "safe"
 requires_stopped = true
-consequence = "Chromium render/compile caches. Regenerated automatically."
+consequence = "Chromium render/compile caches and VS Code's cached workspace-configuration data. Regenerated automatically."
 
 [[rule]]
 id = "vscode.app.extension_installers"
@@ -735,10 +753,67 @@ id = "vscode.app.webdata"
 tool = "vscode"
 root = "app"
 label = "Webview storage"
-paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage", "IndexedDB"]
 risk = "review"
 requires_stopped = true
 consequence = "Webview storage, including extension sign-in/session state. Some extensions may need to re-authenticate."
+
+[[rule]]
+id = "vscode.app.crashpad"
+tool = "vscode"
+root = "app"
+label = "Crash-report state"
+paths = ["Crashpad"]
+risk = "review"
+requires_stopped = true
+consequence = "Chromium/Electron crash-handler state. Can contain crash dumps not yet uploaded/processed."
+
+[[rule]]
+id = "vscode.app.local_state"
+tool = "vscode"
+root = "app"
+label = "Desktop browser engine state"
+paths = ["Local State"]
+risk = "critical"
+consequence = "Chromium installation-wide preferences and runtime metadata. Reset only as targeted troubleshooting; never auto-deleted."
+
+[[rule]]
+id = "vscode.app.preferences"
+tool = "vscode"
+root = "app"
+label = "Reset embedded browser profile preferences"
+paths = ["Preferences"]
+risk = "review"
+requires_stopped = true
+consequence = "Resets the embedded Chromium profile's preferences. Not routine cleanup."
+
+[[rule]]
+id = "vscode.app.machineid"
+tool = "vscode"
+root = "app"
+label = "Machine identity"
+paths = ["machineid"]
+risk = "critical"
+consequence = "Persistent machine/device identifier used by VS Code. Deleting can trigger re-registration or device/account mismatches. Never deleted."
+
+[[rule]]
+id = "vscode.app.backups"
+tool = "vscode"
+root = "app"
+label = "Unsaved editor backups"
+paths = ["Backups"]
+risk = "userdata"
+requires_stopped = true
+consequence = "VS Code hot-exit storage for unsaved editor buffers. Deleting can permanently lose content that was never saved to disk."
+
+[[rule]]
+id = "vscode.app.agent_host"
+tool = "vscode"
+root = "app"
+label = "Unclassified VS Code data: agent-host"
+paths = ["agent-host"]
+risk = "unknown"
+consequence = "Appears to be local state for VS Code's Copilot Agent Mode tool-execution endpoint. Not documented by Microsoft. Shown for size only. Never deleted."
 
 [[rule]]
 id = "vscode.app.history"
@@ -794,9 +869,9 @@ id = "cursor.cli.config"
 tool = "cursor"
 root = "cli"
 label = "Configuration"
-paths = ["argv.json", "cli-config.json", "ide_state.json", "hooks.json", "mcp.json", "hooks", "agents", "skills-cursor"]
+paths = ["argv.json", "cli-config.json", "ide_state.json", "hooks.json", "mcp.json", "hooks", "agents", "skills-cursor", "plugins", "sandbox-policies"]
 risk = "critical"
-consequence = "Cursor CLI flags, hooks, MCP config and agent/skill definitions. Never deleted."
+consequence = "Cursor CLI flags, hooks, MCP config, installed CLI plugins, agent sandbox policies and agent/skill definitions. Never deleted."
 
 [[rule]]
 id = "cursor.cli.sessions"
@@ -820,10 +895,10 @@ consequence = "Deletes old agent plan files."
 id = "cursor.cli.unknown"
 tool = "cursor"
 root = "cli"
-label = "Unclassified Cursor data"
+label = "Unclassified Cursor data: ai-tracking"
 paths = ["ai-tracking"]
 risk = "unknown"
-consequence = "Not documented. Shown for size only. Never deleted."
+consequence = "~/.cursor/ai-tracking (ai-code-tracking.db). Likely local AI code-authorship tracking; not documented by Cursor. Shown for size only. Never deleted."
 
 [[rule]]
 id = "cursor.dotfile"
@@ -839,10 +914,10 @@ id = "cursor.app.cache"
 tool = "cursor"
 root = "app"
 label = "Render and compile caches"
-paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "Trust Tokens-journal", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "CachedConfigurations", "blob_storage", "logs"]
 risk = "safe"
 requires_stopped = true
-consequence = "Chromium render/compile caches. Regenerated automatically."
+consequence = "Chromium render/compile caches and VS Code's cached workspace-configuration data. Regenerated automatically."
 
 [[rule]]
 id = "cursor.app.updater"
@@ -869,10 +944,58 @@ id = "cursor.app.webdata"
 tool = "cursor"
 root = "app"
 label = "Webview storage"
-paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage", "IndexedDB"]
 risk = "review"
 requires_stopped = true
 consequence = "Webview storage, including sign-in/session state. You may need to re-authenticate."
+
+[[rule]]
+id = "cursor.app.crashpad"
+tool = "cursor"
+root = "app"
+label = "Crash-report state"
+paths = ["Crashpad"]
+risk = "review"
+requires_stopped = true
+consequence = "Chromium/Electron crash-handler state. Can contain crash dumps not yet uploaded/processed."
+
+[[rule]]
+id = "cursor.app.local_state"
+tool = "cursor"
+root = "app"
+label = "Desktop browser engine state"
+paths = ["Local State"]
+risk = "critical"
+consequence = "Chromium installation-wide preferences and runtime metadata. Reset only as targeted troubleshooting; never auto-deleted."
+
+[[rule]]
+id = "cursor.app.preferences"
+tool = "cursor"
+root = "app"
+label = "Reset embedded browser profile preferences"
+paths = ["Preferences"]
+risk = "review"
+requires_stopped = true
+consequence = "Resets the embedded Chromium profile's preferences. Not routine cleanup."
+
+[[rule]]
+id = "cursor.app.machineid"
+tool = "cursor"
+root = "app"
+label = "Machine identity"
+paths = ["machineid"]
+risk = "critical"
+consequence = "Persistent machine/device identifier used by Cursor. Deleting can trigger re-registration or device/account mismatches. Never deleted."
+
+[[rule]]
+id = "cursor.app.backups"
+tool = "cursor"
+root = "app"
+label = "Unsaved editor backups"
+paths = ["Backups"]
+risk = "userdata"
+requires_stopped = true
+consequence = "VS Code hot-exit storage for unsaved editor buffers. Deleting can permanently lose content that was never saved to disk."
 
 [[rule]]
 id = "cursor.app.snapshots"
@@ -928,10 +1051,10 @@ consequence = "User settings and globalStorage (including state.vscdb). Never de
 id = "cursor.app.unknown"
 tool = "cursor"
 root = "app"
-label = "Unclassified Cursor data"
+label = "Unclassified Cursor data: AgentStores"
 paths = ["AgentStores"]
 risk = "unknown"
-consequence = "Not documented. Shown for size only. Never deleted."
+consequence = "Cursor/AgentStores/cursor_agent_stores - one folder per background-agent session (files/.sync). Not documented by Cursor. Shown for size only. Never deleted."
 
 [[rule]]
 id = "windsurf.cli.extensions"
@@ -1032,10 +1155,10 @@ id = "windsurf.app.cache"
 tool = "windsurf"
 root = "app"
 label = "Render and compile caches"
-paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "Trust Tokens-journal", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "CachedConfigurations", "blob_storage", "logs"]
 risk = "safe"
 requires_stopped = true
-consequence = "Chromium render/compile caches. Regenerated automatically."
+consequence = "Chromium render/compile caches and VS Code's cached workspace-configuration data. Regenerated automatically."
 
 [[rule]]
 id = "windsurf.app.extension_installers"
@@ -1052,10 +1175,48 @@ id = "windsurf.app.webdata"
 tool = "windsurf"
 root = "app"
 label = "Webview storage"
-paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage", "IndexedDB"]
 risk = "review"
 requires_stopped = true
 consequence = "Webview storage, including sign-in/session state. You may need to re-authenticate."
+
+[[rule]]
+id = "windsurf.app.crashpad"
+tool = "windsurf"
+root = "app"
+label = "Crash-report state"
+paths = ["Crashpad"]
+risk = "review"
+requires_stopped = true
+consequence = "Chromium/Electron crash-handler state. Can contain crash dumps not yet uploaded/processed."
+
+[[rule]]
+id = "windsurf.app.local_state"
+tool = "windsurf"
+root = "app"
+label = "Desktop browser engine state"
+paths = ["Local State"]
+risk = "critical"
+consequence = "Chromium installation-wide preferences and runtime metadata. Reset only as targeted troubleshooting; never auto-deleted."
+
+[[rule]]
+id = "windsurf.app.preferences"
+tool = "windsurf"
+root = "app"
+label = "Reset embedded browser profile preferences"
+paths = ["Preferences"]
+risk = "review"
+requires_stopped = true
+consequence = "Resets the embedded Chromium profile's preferences. Not routine cleanup."
+
+[[rule]]
+id = "windsurf.app.machineid"
+tool = "windsurf"
+root = "app"
+label = "Machine identity"
+paths = ["machineid"]
+risk = "critical"
+consequence = "Persistent machine/device identifier used by Windsurf. Deleting can trigger re-registration or device/account mismatches. Never deleted."
 
 [[rule]]
 id = "windsurf.app.history"
@@ -1138,10 +1299,10 @@ id = "kiro.app.cache"
 tool = "kiro"
 root = "app"
 label = "Render and compile caches"
-paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "Trust Tokens-journal", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "CachedConfigurations", "blob_storage", "logs"]
 risk = "safe"
 requires_stopped = true
-consequence = "Chromium render/compile caches. Regenerated automatically."
+consequence = "Chromium render/compile caches and VS Code's cached workspace-configuration data. Regenerated automatically."
 
 [[rule]]
 id = "kiro.app.extension_installers"
@@ -1158,10 +1319,48 @@ id = "kiro.app.webdata"
 tool = "kiro"
 root = "app"
 label = "Webview storage"
-paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage", "IndexedDB"]
 risk = "review"
 requires_stopped = true
 consequence = "Webview storage, including sign-in/session state. You may need to re-authenticate."
+
+[[rule]]
+id = "kiro.app.crashpad"
+tool = "kiro"
+root = "app"
+label = "Crash-report state"
+paths = ["Crashpad"]
+risk = "review"
+requires_stopped = true
+consequence = "Chromium/Electron crash-handler state. Can contain crash dumps not yet uploaded/processed."
+
+[[rule]]
+id = "kiro.app.local_state"
+tool = "kiro"
+root = "app"
+label = "Desktop browser engine state"
+paths = ["Local State"]
+risk = "critical"
+consequence = "Chromium installation-wide preferences and runtime metadata. Reset only as targeted troubleshooting; never auto-deleted."
+
+[[rule]]
+id = "kiro.app.preferences"
+tool = "kiro"
+root = "app"
+label = "Reset embedded browser profile preferences"
+paths = ["Preferences"]
+risk = "review"
+requires_stopped = true
+consequence = "Resets the embedded Chromium profile's preferences. Not routine cleanup."
+
+[[rule]]
+id = "kiro.app.machineid"
+tool = "kiro"
+root = "app"
+label = "Machine identity"
+paths = ["machineid"]
+risk = "critical"
+consequence = "Persistent machine/device identifier used by Kiro. Deleting can trigger re-registration or device/account mismatches. Never deleted."
 
 [[rule]]
 id = "kiro.app.history"
@@ -1253,10 +1452,10 @@ id = "antigravity.app.cache"
 tool = "antigravity"
 root = "app"
 label = "Render and compile caches"
-paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "logs"]
+paths = ["Cache", "Code Cache", "CachedData", "GPUCache", "DawnWebGPUCache", "DawnGraphiteCache", "Service Worker", "Shared Dictionary", "Trust Tokens", "Trust Tokens-journal", "DIPS", "DIPS-wal", "DIPS-shm", "CachedProfilesData", "CachedConfigurations", "blob_storage", "logs"]
 risk = "safe"
 requires_stopped = true
-consequence = "Chromium render/compile caches. Regenerated automatically."
+consequence = "Chromium render/compile caches and VS Code's cached workspace-configuration data. Regenerated automatically."
 
 [[rule]]
 id = "antigravity.app.extension_installers"
@@ -1273,10 +1472,48 @@ id = "antigravity.app.webdata"
 tool = "antigravity"
 root = "app"
 label = "Webview storage"
-paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage"]
+paths = ["Cookies", "Cookies-journal", "Local Storage", "Session Storage", "Partitions", "WebStorage", "IndexedDB"]
 risk = "review"
 requires_stopped = true
 consequence = "Webview storage, including sign-in/session state. You may need to re-authenticate."
+
+[[rule]]
+id = "antigravity.app.crashpad"
+tool = "antigravity"
+root = "app"
+label = "Crash-report state"
+paths = ["Crashpad"]
+risk = "review"
+requires_stopped = true
+consequence = "Chromium/Electron crash-handler state. Can contain crash dumps not yet uploaded/processed."
+
+[[rule]]
+id = "antigravity.app.local_state"
+tool = "antigravity"
+root = "app"
+label = "Desktop browser engine state"
+paths = ["Local State"]
+risk = "critical"
+consequence = "Chromium installation-wide preferences and runtime metadata. Reset only as targeted troubleshooting; never auto-deleted."
+
+[[rule]]
+id = "antigravity.app.preferences"
+tool = "antigravity"
+root = "app"
+label = "Reset embedded browser profile preferences"
+paths = ["Preferences"]
+risk = "review"
+requires_stopped = true
+consequence = "Resets the embedded Chromium profile's preferences. Not routine cleanup."
+
+[[rule]]
+id = "antigravity.app.machineid"
+tool = "antigravity"
+root = "app"
+label = "Machine identity"
+paths = ["machineid"]
+risk = "critical"
+consequence = "Persistent machine/device identifier used by Antigravity. Deleting can trigger re-registration or device/account mismatches. Never deleted."
 
 [[rule]]
 id = "antigravity.app.history"
